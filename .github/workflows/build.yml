@@ -1,0 +1,32 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  esp-idf:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        idf_version: ["v5.2", "v5.3", "release-v5.4"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ matrix.idf_version }}
+          target: esp32c6
+          command: idf.py build
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.idf_version }}
+          path: |
+            build/rw1990_programmer.bin
+            build/bootloader/bootloader.bin
+            build/partition_table/partition-table.bin

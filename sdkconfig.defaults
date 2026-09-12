@@ -1,0 +1,28 @@
+# Target
+CONFIG_IDF_TARGET="esp32c6"
+
+# Partition table: single large app + NVS (no OTA in this project)
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# FreeRTOS tick 1 kHz gives 1 ms vTaskDelay granularity (used for RW1990 programming pulses)
+CONFIG_FREERTOS_HZ=1000
+
+# HTTP server: room for JSON bodies and long headers from browsers
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+
+# Wi-Fi: modest buffers, this device serves a single operator
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+
+# Networking
+CONFIG_LWIP_LOCAL_HOSTNAME="rw1990"
+CONFIG_LWIP_DHCPS=y
+
+# Logging
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_COLORS=y
+
+# Main task needs stack for init sequence
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096

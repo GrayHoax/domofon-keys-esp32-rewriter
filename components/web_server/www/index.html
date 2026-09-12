@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RW1990 Программатор</title>
+<style>
+  :root {
+    --bg: #0f172a; --card: #1e293b; --card2: #273449; --text: #e2e8f0; --muted: #94a3b8;
+    --accent: #38bdf8; --ok: #4ade80; --warn: #fbbf24; --err: #f87171; --border: #334155;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; background: var(--card); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .pill { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: var(--card2); color: var(--muted); border: 1px solid var(--border); white-space: nowrap; }
+  .pill.ok { color: var(--ok); border-color: var(--ok); }
+  .pill.warn { color: var(--warn); border-color: var(--warn); }
+  .pill.err { color: var(--err); border-color: var(--err); }
+  nav { display: flex; background: var(--card); border-bottom: 1px solid var(--border); }
+  nav button { flex: 1; padding: 12px; background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted); font-size: 15px; cursor: pointer; }
+  nav button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  main { max-width: 720px; margin: 0 auto; padding: 16px; }
+  section.tab { display: none; }
+  section.tab.active { display: block; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .keyid { font: 600 26px/1.2 ui-monospace, "Cascadia Mono", Consolas, monospace; letter-spacing: .06em; word-break: break-all; min-height: 32px; }
+  .keyid.none { color: var(--muted); font-size: 18px; font-weight: 400; letter-spacing: 0; }
+  .keyid.bad { color: var(--err); }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 6px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  input[type=text], input[type=password], select {
+    width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 15px;
+  }
+  input.mono { font-family: ui-monospace, Consolas, monospace; letter-spacing: .08em; text-transform: uppercase; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+  .row > * { flex: 1 1 auto; }
+  button.btn { padding: 10px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--card2); color: var(--text); font-size: 15px; cursor: pointer; }
+  button.btn:hover { border-color: var(--accent); }
+  button.btn:disabled { opacity: .5; cursor: default; }
+  button.btn.primary { background: var(--accent); color: #0b1220; border-color: var(--accent); font-weight: 600; }
+  button.btn.danger { border-color: var(--err); color: var(--err); }
+  .check { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 14px; }
+  .check input { width: 18px; height: 18px; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 14px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; word-break: break-all; }
+  .netlist { list-style: none; margin: 10px 0 0; padding: 0; max-height: 240px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+  .netlist li { display: flex; justify-content: space-between; padding: 9px 12px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .netlist li:last-child { border-bottom: 0; }
+  .netlist li:hover { background: var(--card2); }
+  .netlist .meta { color: var(--muted); font-size: 13px; }
+  .log { font: 13px/1.5 ui-monospace, Consolas, monospace; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; max-height: 220px; overflow: auto; }
+  .log div { white-space: pre-wrap; }
+  .log .ok { color: var(--ok); } .log .err { color: var(--err); } .log .warn { color: var(--warn); }
+  .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--card2); border: 1px solid var(--border); padding: 10px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
+  .toast.show { opacity: 1; }
+  .toast.ok { border-color: var(--ok); } .toast.err { border-color: var(--err); }
+</style>
+</head>
+<body>
+<header>
+  <h1>RW1990 Программатор</h1>
+  <span id="wifiPill" class="pill">…</span>
+</header>
+<nav>
+  <button data-tab="key" class="active">Ключ</button>
+  <button data-tab="net">Сеть</button>
+  <button data-tab="sys">Система</button>
+</nav>
+
+<main>
+  <!-- ===================== Ключ ===================== -->
+  <section class="tab active" id="tab-key">
+    <div class="card">
+      <h2>Считыватель</h2>
+      <div id="keyId" class="keyid none">Приложите ключ…</div>
+      <div id="keyHint" class="hint"></div>
+      <div class="row">
+        <button class="btn" id="btnRead">Прочитать</button>
+        <button class="btn" id="btnUse" disabled>В поле записи</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Запись</h2>
+      <label for="writeId">ID ключа (16 hex, порядок как на шине: семейство … CRC)</label>
+      <input type="text" id="writeId" class="mono" maxlength="31" placeholder="01 A1 B2 C3 D4 E5 F6 5C" autocomplete="off" spellcheck="false">
+      <div id="writeHint" class="hint"></div>
+      <label for="variant">Тип заготовки</label>
+      <select id="variant">
+        <option value="rw1990v1">RW1990.1 (0xD1, инверсные данные)</option>
+        <option value="rw1990v2">RW1990.2 (0x1D, прямые данные)</option>
+      </select>
+      <div class="check"><input type="checkbox" id="fixCrc"><label for="fixCrc" style="margin:0">Автоисправление CRC</label></div>
+      <div class="row">
+        <button class="btn primary" id="btnWrite">Записать</button>
+        <button class="btn" id="btnVerify">Проверить ключ</button>
+      </div>
+      <div class="hint">Запись занимает около секунды. Не отрывайте ключ от контактов до окончания операции.</div>
+    </div>
+
+    <div class="card">
+      <h2>Журнал</h2>
+      <div id="log" class="log"></div>
+    </div>
+  </section>
+
+  <!-- ===================== Сеть ===================== -->
+  <section class="tab" id="tab-net">
+    <div class="card">
+      <h2>Состояние</h2>
+      <dl class="kv">
+        <dt>Режим</dt><dd id="nState">—</dd>
+        <dt>Сеть</dt><dd id="nSsid">—</dd>
+        <dt>IP адрес</dt><dd id="nIp">—</dd>
+        <dt>Сигнал</dt><dd id="nRssi">—</dd>
+        <dt>Точка доступа</dt><dd id="nAp">—</dd>
+        <dt>Имя хоста</dt><dd id="nHost">—</dd>
+      </dl>
+    </div>
+
+    <div class="card">
+      <h2>Подключение к Wi-Fi</h2>
+      <label for="staSsid">Имя сети (SSID)</label>
+      <div class="row" style="margin-top:0">
+        <input type="text" id="staSsid" maxlength="32" autocomplete="off" style="flex:3">
+        <button class="btn" id="btnScan" style="flex:1">Сканировать</button>
+      </div>
+      <ul id="netList" class="netlist" hidden></ul>
+      <label for="staPass">Пароль</label>
+      <div class="row" style="margin-top:0">
+        <input type="password" id="staPass" maxlength="64" autocomplete="off" style="flex:3">
+        <button class="btn" id="btnShowPass" style="flex:1" type="button">Показать</button>
+      </div>
+      <div class="row">
+        <button class="btn primary" id="btnStaSave">Сохранить и подключиться</button>
+        <button class="btn danger" id="btnStaForget">Забыть сеть</button>
+      </div>
+      <div class="hint">После успешного подключения точка доступа устройства выключится через несколько секунд — откройте интерфейс по новому IP или по адресу <span id="hostLink">http://rw1990.local</span>.</div>
+    </div>
+
+    <div class="card">
+      <h2>Собственная точка доступа</h2>
+      <label for="apSsid">SSID (пусто — имя по умолчанию)</label>
+      <input type="text" id="apSsid" maxlength="32" autocomplete="off">
+      <label for="apPass">Пароль (пусто — открытая сеть, иначе 8–64 символа)</label>
+      <input type="password" id="apPass" maxlength="64" autocomplete="off">
+      <div class="row"><button class="btn" id="btnApSave">Сохранить</button></div>
+    </div>
+  </section>
+
+  <!-- ===================== Система ===================== -->
+  <section class="tab" id="tab-sys">
+    <div class="card">
+      <h2>Устройство</h2>
+      <dl class="kv">
+        <dt>Прошивка</dt><dd id="sFw">—</dd>
+        <dt>ESP-IDF</dt><dd id="sIdf">—</dd>
+        <dt>Время работы</dt><dd id="sUptime">—</dd>
+        <dt>Свободно RAM</dt><dd id="sHeap">—</dd>
+        <dt>MAC</dt><dd id="sMac">—</dd>
+      </dl>
+      <div class="row"><button class="btn danger" id="btnReboot">Перезагрузить</button></div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const state = { lastKey: null, busy: false };
+
+  /* ---------- helpers ---------- */
+  async function api(path, opts) {
+    const res = await fetch(path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts || {}));
+    let data = null;
+    try { data = await res.json(); } catch (e) { /* non-JSON */ }
+    if (!data) data = { ok: res.ok, message: res.statusText };
+    if (typeof data.ok === 'undefined') data.ok = res.ok;
+    return data;
+  }
+  const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body || {}) });
+
+  function toast(msg, kind) {
+    const t = $('toast');
+    t.textContent = msg;
+    t.className = 'toast show ' + (kind || '');
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => (t.className = 'toast'), 3000);
+  }
+
+  function log(msg, kind) {
+    const el = document.createElement('div');
+    el.className = kind || '';
+    el.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+    const box = $('log');
+    box.prepend(el);
+    while (box.childElementCount > 100) box.lastChild.remove();
+  }
+
+  function fmtId(id) { return id ? id.replace(/(..)(?=.)/g, '$1 ') : ''; }
+  function normId(s) { return (s || '').replace(/[^0-9a-fA-F]/g, '').toUpperCase(); }
+
+  function crc8(bytes) {
+    let crc = 0;
+    for (const b of bytes) {
+      let x = b;
+      for (let i = 0; i < 8; i++) {
+        const mix = (crc ^ x) & 1;
+        crc >>= 1;
+        if (mix) crc ^= 0x8C;
+        x >>= 1;
+      }
+    }
+    return crc;
+  }
+
+  function setBusy(b) {
+    state.busy = b;
+    ['btnRead', 'btnWrite', 'btnVerify'].forEach((id) => ($(id).disabled = b));
+  }
+
+  /* ---------- tabs ---------- */
+  document.querySelectorAll('nav button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('section.tab').forEach((s) => s.classList.toggle('active', s.id === 'tab-' + btn.dataset.tab));
+      if (btn.dataset.tab !== 'key') refreshStatus();
+    });
+  });
+
+  /* ---------- reader ---------- */
+  function renderReader(r) {
+    const el = $('keyId');
+    const hint = $('keyHint');
+    if (r.bus_shorted) {
+      el.textContent = 'Замыкание линии данных';
+      el.className = 'keyid none bad';
+      hint.textContent = 'Проверьте контакты считывателя.';
+    } else if (r.present) {
+      el.textContent = fmtId(r.id);
+      el.className = 'keyid' + (r.crc_ok ? '' : ' bad');
+      hint.textContent = r.crc_ok
+        ? 'CRC верна · семейство 0x' + r.family.toString(16).toUpperCase().padStart(2, '0') + (r.family === 1 ? ' (DS1990A)' : '')
+        : 'Ошибка CRC — плохой контакт или повреждённый ключ';
+      if (r.crc_ok && state.lastKey !== r.id) log('Прочитан ключ ' + fmtId(r.id), 'ok');
+      state.lastKey = r.id;
+    } else {
+      el.textContent = 'Приложите ключ…';
+      el.className = 'keyid none';
+      hint.textContent = '';
+      state.lastKey = null;
+    }
+    $('btnUse').disabled = !(r.present && r.crc_ok);
+  }
+
+  async function pollReader() {
+    if (state.busy || !document.getElementById('tab-key').classList.contains('active')) return;
+    try {
+      const r = await api('/api/key');
+      if (r.ok) renderReader(r);
+    } catch (e) { /* offline: keep last state */ }
+  }
+
+  $('btnRead').addEventListener('click', async () => {
+    setBusy(true);
+    try {
+      const r = await post('/api/key/read');
+      if (r.ok) {
+        renderReader({ present: true, crc_ok: r.crc_ok, id: r.id, family: r.family });
+        toast(r.crc_ok ? 'Ключ прочитан' : 'Прочитан с ошибкой CRC', r.crc_ok ? 'ok' : 'err');
+      } else {
+        toast(r.message, 'err'); log(r.message, 'err');
+      }
+    } finally { setBusy(false); }
+  });
+
+  $('btnUse').addEventListener('click', () => {
+    if (state.lastKey) { $('writeId').value = fmtId(state.lastKey); validateWriteId(); }
+  });
+
+  /* ---------- write ---------- */
+  function validateWriteId() {
+    const id = normId($('writeId').value);
+    const hint = $('writeHint');
+    if (id.length === 0) { hint.textContent = ''; return null; }
+    if (id.length !== 16) { hint.textContent = 'Введено ' + id.length + ' из 16 символов'; return null; }
+    const bytes = id.match(/../g).map((h) => parseInt(h, 16));
+    const crc = crc8(bytes.slice(0, 7));
+    if (crc === bytes[7]) {
+      hint.textContent = 'CRC верна';
+    } else {
+      hint.textContent = 'CRC неверна: ожидается ' + crc.toString(16).toUpperCase().padStart(2, '0') +
+        ($('fixCrc').checked ? ' (будет исправлена)' : ' — включите автоисправление');
+    }
+    return id;
+  }
+  $('writeId').addEventListener('input', () => {
+    const el = $('writeId');
+    const pos = el.selectionStart;
+    el.value = fmtId(normId(el.value).slice(0, 16));
+    el.selectionStart = el.selectionEnd = Math.min(pos + 1, el.value.length);
+    validateWriteId();
+  });
+  $('fixCrc').addEventListener('change', validateWriteId);
+
+  $('btnWrite').addEventListener('click', async () => {
+    const id = validateWriteId();
+    if (!id) { toast('Введите корректный ID ключа', 'err'); return; }
+    const variant = $('variant').value;
+    if (!confirm('Записать ' + fmtId(id) + ' в заготовку ' + $('variant').selectedOptions[0].text.split(' ')[0] + '?')) return;
+    setBusy(true);
+    log('Запись ' + fmtId(id) + ' (' + variant + ')…');
+    try {
+      const r = await post('/api/key/write', { id, variant, fix_crc: $('fixCrc').checked });
+      if (r.ok) {
+        log('Записано и проверено: ' + fmtId(r.id), 'ok');
+        toast('Ключ записан', 'ok');
+        if (r.id !== id) $('writeId').value = fmtId(r.id), validateWriteId();
+      } else {
+        log('Ошибка записи: ' + r.message + ' [' + (r.result || r.error) + ']', 'err');
+        toast(r.message, 'err');
+      }
+    } catch (e) {
+      log('Нет связи с устройством', 'err');
+    } finally { setBusy(false); }
+  });
+
+  /* ---------- verify ---------- */
+  $('btnVerify').addEventListener('click', async () => {
+    const id = validateWriteId();
+    if (!id) { toast('Введите ID ключа для проверки', 'err'); return; }
+    setBusy(true);
+    log('Проверка ключа ' + fmtId(id) + '…');
+    try {
+      const r = await post('/api/key/verify', { id, reads: 10 });
+      const detail = ' (' + r.reads_ok + '/' + r.reads_total + ' чтений' + (r.actual ? ', прочитано ' + fmtId(r.actual) : '') + ')';
+      if (r.ok) { log('Проверка пройдена' + detail, 'ok'); toast('Ключ исправен', 'ok'); }
+      else { log('Проверка не пройдена: ' + r.message + detail, r.match === false ? 'err' : 'warn'); toast(r.message, 'err'); }
+    } finally { setBusy(false); }
+  });
+
+  /* ---------- network ---------- */
+  const stateNames = {
+    idle: ['Ожидание', 'warn'], connecting: ['Подключение…', 'warn'], connected: ['Подключено', 'ok'],
+    ap_only: ['Точка доступа', 'warn'], ap_fallback: ['Точка доступа (нет связи с сетью)', 'err'],
+  };
+
+  function renderStatus(s) {
+    const w = s.wifi;
+    const [name, cls] = stateNames[w.state] || [w.state, ''];
+    const pill = $('wifiPill');
+    pill.textContent = w.state === 'connected' ? w.sta_ssid + ' · ' + w.sta_ip : name;
+    pill.className = 'pill ' + cls;
+
+    $('nState').textContent = name;
+    $('nSsid').textContent = w.sta_configured ? w.sta_ssid : 'не настроена';
+    $('nIp').textContent = w.sta_ip || '—';
+    $('nRssi').textContent = w.state === 'connected' ? w.rssi + ' dBm' : '—';
+    $('nAp').textContent = w.ap_active ? w.ap_ssid + ' · ' + w.ap_ip + ' · клиентов: ' + w.ap_clients : 'выключена';
+    $('nHost').textContent = w.hostname + '.local';
+    $('hostLink').textContent = 'http://' + w.hostname + '.local';
+    if (!$('staSsid').value && w.sta_configured) $('staSsid').value = w.sta_ssid;
+    if (!$('apSsid').dataset.touched) $('apSsid').placeholder = w.ap_ssid;
+
+    $('sFw').textContent = s.firmware;
+    $('sIdf').textContent = s.idf;
+    const u = s.uptime_s, d = Math.floor(u / 86400), h = Math.floor(u % 86400 / 3600), m = Math.floor(u % 3600 / 60);
+    $('sUptime').textContent = (d ? d + ' д ' : '') + h + ' ч ' + m + ' мин';
+    $('sHeap').textContent = Math.round(s.free_heap / 1024) + ' КБ';
+    $('sMac').textContent = w.mac;
+  }
+
+  async function refreshStatus() {
+    try { const s = await api('/api/status'); if (s.ok) renderStatus(s); } catch (e) { /* offline */ }
+  }
+
+  $('btnScan').addEventListener('click', async () => {
+    const btn = $('btnScan'), list = $('netList');
+    btn.disabled = true; btn.textContent = 'Поиск…';
+    try {
+      const r = await api('/api/wifi/scan');
+      if (!r.ok) { toast(r.message, 'err'); return; }
+      list.innerHTML = '';
+      if (r.networks.length === 0) { toast('Сети не найдены'); list.hidden = true; return; }
+      for (const n of r.networks) {
+        const li = document.createElement('li');
+        const name = document.createElement('span'); name.textContent = n.ssid;
+        const meta = document.createElement('span'); meta.className = 'meta';
+        meta.textContent = n.rssi + ' dBm · ' + (n.auth === 'open' ? 'открытая' : n.auth.toUpperCase());
+        li.append(name, meta);
+        li.addEventListener('click', () => { $('staSsid').value = n.ssid; list.hidden = true; $('staPass').focus(); });
+        list.appendChild(li);
+      }
+      list.hidden = false;
+    } finally { btn.disabled = false; btn.textContent = 'Сканировать'; }
+  });
+
+  $('btnShowPass').addEventListener('click', () => {
+    const p = $('staPass');
+    p.type = p.type === 'password' ? 'text' : 'password';
+    $('btnShowPass').textContent = p.type === 'password' ? 'Показать' : 'Скрыть';
+  });
+
+  $('btnStaSave').addEventListener('click', async () => {
+    const ssid = $('staSsid').value.trim(), password = $('staPass').value;
+    if (!ssid) { toast('Укажите имя сети', 'err'); return; }
+    const r = await post('/api/wifi/sta', { ssid, password });
+    toast(r.message, r.ok ? 'ok' : 'err');
+    if (r.ok) { $('staPass').value = ''; setTimeout(refreshStatus, 3000); }
+  });
+
+  $('btnStaForget').addEventListener('click', async () => {
+    if (!confirm('Удалить сохранённую сеть? Устройство останется доступно только через свою точку доступа.')) return;
+    const r = await api('/api/wifi/sta', { method: 'DELETE' });
+    toast(r.message, r.ok ? 'ok' : 'err');
+    if (r.ok) { $('staSsid').value = ''; setTimeout(refreshStatus, 1500); }
+  });
+
+  $('apSsid').addEventListener('input', () => ($('apSsid').dataset.touched = '1'));
+  $('btnApSave').addEventListener('click', async () => {
+    const r = await post('/api/wifi/ap', { ssid: $('apSsid').value.trim(), password: $('apPass').value });
+    toast(r.message, r.ok ? 'ok' : 'err');
+    if (r.ok) { $('apPass').value = ''; setTimeout(refreshStatus, 1500); }
+  });
+
+  /* ---------- system ---------- */
+  $('btnReboot').addEventListener('click', async () => {
+    if (!confirm('Перезагрузить устройство?')) return;
+    const r = await post('/api/system/reboot');
+    toast(r.message, r.ok ? 'ok' : 'err');
+  });
+
+  /* ---------- start ---------- */
+  refreshStatus();
+  pollReader();
+  setInterval(pollReader, 700);
+  setInterval(refreshStatus, 10000);
+})();
+</script>
+</body>
+</html>

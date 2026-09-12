@@ -1,0 +1,84 @@
+menu "RW1990 Programmer"
+
+    menu "Hardware"
+
+        config RW_ONEWIRE_GPIO
+            int "1-Wire data GPIO"
+            range 0 30
+            default 4
+            help
+                GPIO connected to the iButton contact pad. Requires an external
+                2.2k..4.7k pull-up to 3.3 V.
+
+        config RW_KEY_POLL_INTERVAL_MS
+            int "Reader poll interval (ms)"
+            range 50 5000
+            default 300
+            help
+                How often the background task probes the contact pad for a key.
+
+        config RW_STATUS_LED_ENABLE
+            bool "Enable WS2812 status LED"
+            default y
+
+        config RW_STATUS_LED_GPIO
+            int "Status LED GPIO"
+            depends on RW_STATUS_LED_ENABLE
+            range 0 30
+            default 8
+            help
+                ESP32-C6-DevKitC-1 and DevKitM-1 have the on-board RGB LED on GPIO8.
+
+    endmenu
+
+    menu "Network"
+
+        config RW_AP_SSID_PREFIX
+            string "Access point SSID prefix"
+            default "RW1990"
+            help
+                The AP name is "<prefix>-XXXXXX" where XXXXXX are the last three
+                bytes of the MAC address, unless overridden from the web UI.
+
+        config RW_AP_PASSWORD
+            string "Default access point password"
+            default "rw1990pass"
+            help
+                WPA2 password for the fallback access point (8..63 characters).
+                Leave empty for an open network. Can be changed from the web UI.
+
+        config RW_STA_CONNECT_TIMEOUT_S
+            int "Station connect timeout (s)"
+            range 5 300
+            default 20
+            help
+                Time to keep retrying the configured network before raising the
+                access point.
+
+        config RW_STA_RETRY_INTERVAL_S
+            int "Station retry interval while in AP fallback (s)"
+            range 10 3600
+            default 60
+
+        config RW_AP_LINGER_S
+            int "Keep AP alive after station connects (s)"
+            range 0 600
+            default 15
+            help
+                Gives an operator connected to the AP time to read the new
+                station IP address before the AP shuts down.
+
+        config RW_MDNS_HOSTNAME
+            string "mDNS hostname"
+            default "rw1990"
+            help
+                The UI is reachable at http://<hostname>.local
+
+        config RW_HTTP_PORT
+            int "HTTP server port"
+            range 1 65535
+            default 80
+
+    endmenu
+
+endmenu
