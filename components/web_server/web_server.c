@@ -256,17 +256,19 @@ static esp_err_t h_key_write(httpd_req_t *req)
         return ESP_FAIL;
     }
 
+    /* Everything needed from the body is copied out before it is freed:
+     * json_string() returns pointers into the cJSON tree. */
     ibutton_key_t key;
     ibutton_write_variant_t variant = IBUTTON_WRITE_RW1990_V1;
     esp_err_t err = ibutton_key_from_str(json_string(body, "id", ""), &key);
+    esp_err_t variant_err = ibutton_write_variant_from_str(json_string(body, "variant", "rw1990v1"), &variant);
     bool fix_crc = json_bool(body, "fix_crc", false);
-    const char *variant_str = json_string(body, "variant", "rw1990v1");
     cJSON_Delete(body);
 
     if (err != ESP_OK) {
         return send_error(req, "400 Bad Request", "bad_id", "ID ключа должен содержать 16 шестнадцатеричных цифр");
     }
-    if (ibutton_write_variant_from_str(variant_str, &variant) != ESP_OK) {
+    if (variant_err != ESP_OK) {
         return send_error(req, "400 Bad Request", "bad_variant", "Неизвестный тип заготовки");
     }
     if (!ibutton_key_crc_ok(&key)) {
