@@ -4,11 +4,13 @@ menu "RW1990 Programmer"
 
         config RW_ONEWIRE_GPIO
             int "1-Wire data GPIO"
-            range 0 30
+            range 0 48
+            default 6 if IDF_TARGET_ESP32C3
             default 4
             help
                 GPIO connected to the iButton contact pad. Requires an external
-                2.2k..4.7k pull-up to 3.3 V.
+                2.2k..4.7k pull-up to 3.3 V. Avoid strapping pins (ESP32-C3:
+                GPIO2/8/9, ESP32-C6: GPIO4/5/8/9/15) and UART0 pins.
 
         config RW_KEY_POLL_INTERVAL_MS
             int "Reader poll interval (ms)"
@@ -18,16 +20,58 @@ menu "RW1990 Programmer"
                 How often the background task probes the contact pad for a key.
 
         config RW_STATUS_LED_ENABLE
-            bool "Enable WS2812 status LED"
+            bool "Enable status LED"
             default y
 
-        config RW_STATUS_LED_GPIO
-            int "Status LED GPIO"
+        choice RW_STATUS_LED_TYPE
+            prompt "Status LED type"
             depends on RW_STATUS_LED_ENABLE
-            range 0 30
+            default RW_STATUS_LED_RGB_GPIO if IDF_TARGET_ESP32C3
+            default RW_STATUS_LED_WS2812
+            help
+                NodeMCU ESP-C3-12F-Kit carries a discrete RGB LED on three GPIOs;
+                ESP32-C6 dev kits carry an addressable WS2812 on a single GPIO.
+
+            config RW_STATUS_LED_RGB_GPIO
+                bool "Discrete RGB LED on three GPIOs (LEDC PWM)"
+
+            config RW_STATUS_LED_WS2812
+                bool "Addressable WS2812 LED (RMT)"
+        endchoice
+
+        config RW_STATUS_LED_GPIO
+            int "WS2812 data GPIO"
+            depends on RW_STATUS_LED_WS2812
+            range 0 48
             default 8
             help
                 ESP32-C6-DevKitC-1 and DevKitM-1 have the on-board RGB LED on GPIO8.
+
+        config RW_STATUS_LED_R_GPIO
+            int "Red channel GPIO"
+            depends on RW_STATUS_LED_RGB_GPIO
+            range 0 48
+            default 3
+
+        config RW_STATUS_LED_G_GPIO
+            int "Green channel GPIO"
+            depends on RW_STATUS_LED_RGB_GPIO
+            range 0 48
+            default 4
+
+        config RW_STATUS_LED_B_GPIO
+            int "Blue channel GPIO"
+            depends on RW_STATUS_LED_RGB_GPIO
+            range 0 48
+            default 5
+
+        config RW_STATUS_LED_ACTIVE_LOW
+            bool "RGB LED is active-low (common anode)"
+            depends on RW_STATUS_LED_RGB_GPIO
+            default n
+            help
+                ESP-C3-12F-Kit drives its LED with a high level (common cathode).
+                Enable for boards where the LED lights when the pin is pulled low.
 
     endmenu
 

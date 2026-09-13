@@ -1,6 +1,10 @@
 /**
  * @file status_led.h
- * @brief Single addressable RGB LED (WS2812, on-board on ESP32-C6 dev kits) used as a status indicator.
+ * @brief On-board RGB LED used as a status indicator.
+ *
+ * Two hardware backends are selected in menuconfig: a discrete RGB LED on
+ * three GPIOs driven by LEDC PWM (NodeMCU ESP-C3-12F-Kit) or a single
+ * addressable WS2812 driven by RMT (ESP32-C6 dev kits).
  *
  * A persistent "mode" colour/pattern reflects the network state; short
  * "flash" notifications overlay it for key events and then fall back.

@@ -1,5 +1,5 @@
-# Target
-CONFIG_IDF_TARGET="esp32c6"
+# Target is chosen with `idf.py set-target esp32c3|esp32c6` (see README);
+# pin defaults follow the target in main/Kconfig.projbuild.
 
 # Partition table: single large app + NVS (no OTA in this project)
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
