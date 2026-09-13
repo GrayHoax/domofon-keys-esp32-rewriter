@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "status_led.c"
     INCLUDE_DIRS "include"
-    PRIV_REQUIRES driver esp_timer
+    PRIV_REQUIRES esp_driver_rmt
 )

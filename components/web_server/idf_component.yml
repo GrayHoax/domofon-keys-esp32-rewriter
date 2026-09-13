@@ -1,0 +1,4 @@
+## Managed dependencies of the web_server component
+dependencies:
+  idf: ">=5.2"
+  espressif/cjson: "^1.7.19"
