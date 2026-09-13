@@ -57,9 +57,11 @@ GND ─────────────────────────�
 ## Сборка и прошивка
 
 Требуется [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c6/get-started/index.html)
-версии **5.2 или новее** (поддержка ESP32-C6 стабильна начиная с 5.1).
-Внешние компоненты (`espressif/mdns`, `espressif/led_strip`) подтягиваются
-менеджером компонентов автоматически при первой сборке.
+версии **6.0 или новее** (проект собран и проверен на v6.0.2; совместим с
+5.3–5.4, где уже есть компоненты `esp_driver_gpio` / `esp_driver_rmt`).
+Внешние компоненты (`espressif/mdns`, `espressif/led_strip`,
+`espressif/cjson` — в IDF 6.0 cJSON вынесен из фреймворка в реестр)
+подтягиваются менеджером компонентов автоматически при первой сборке.
 
 ```bash
 idf.py set-target esp32c6

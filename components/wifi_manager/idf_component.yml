@@ -1,4 +1,4 @@
 ## Managed dependencies of the wifi_manager component
 dependencies:
-  idf: ">=5.2"
+  idf: ">=5.3"
   espressif/mdns: "^1.4.0"

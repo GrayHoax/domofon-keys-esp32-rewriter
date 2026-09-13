@@ -95,7 +95,7 @@ const char *wifi_manager_state_str(wifi_mgr_state_t state);
 
 /**
  * @brief Blocking scan for nearby access points (takes a few seconds).
- * @return ESP_ERR_WIFI_STATE if a connection attempt is in progress; try again later.
+ * @return ESP_ERR_INVALID_STATE if a connection attempt is in progress; try again later.
  */
 esp_err_t wifi_manager_scan(wifi_mgr_scan_entry_t *entries, size_t max_entries, size_t *count);
 

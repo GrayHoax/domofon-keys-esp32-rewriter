@@ -29,8 +29,8 @@ typedef struct __attribute__((packed)) {
 } dns_header_t;
 
 static struct {
-    TaskHandle_t volatile task;
-    volatile bool running;
+    volatile bool running; /* Cleared by stop() to ask the task to exit. */
+    volatile bool alive;   /* Set while the task exists; cleared by the task itself. */
     esp_ip4_addr_t answer;
 } s;
 
@@ -141,20 +141,25 @@ done:
         close(sock);
     }
     ESP_LOGI(TAG, "stopped");
-    s.task = NULL;
+    s.alive = false;
     vTaskDelete(NULL);
 }
 
 esp_err_t captive_dns_start(esp_ip4_addr_t answer_ip)
 {
-    if (s.task != NULL) {
-        s.answer = answer_ip;
+    s.answer = answer_ip;
+    if (s.alive) {
         return ESP_OK;
     }
-    s.answer = answer_ip;
     s.running = true;
-    BaseType_t ok = xTaskCreate(dns_task, "captive_dns", TASK_STACK, NULL, TASK_PRIO, &s.task);
-    ESP_RETURN_ON_FALSE(ok == pdPASS, ESP_ERR_NO_MEM, TAG, "task alloc failed");
+    s.alive = true;
+    BaseType_t ok = xTaskCreate(dns_task, "captive_dns", TASK_STACK, NULL, TASK_PRIO, NULL);
+    if (ok != pdPASS) {
+        s.alive = false;
+        s.running = false;
+        ESP_LOGE(TAG, "task alloc failed");
+        return ESP_ERR_NO_MEM;
+    }
     return ESP_OK;
 }
 
@@ -163,7 +168,7 @@ void captive_dns_stop(void)
     s.running = false;
     /* The task exits on its own after the receive timeout; wait for it so a
      * subsequent start() cannot race with the dying instance. */
-    for (int i = 0; i < 20 && s.task != NULL; i++) {
+    for (int i = 0; i < 20 && s.alive; i++) {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

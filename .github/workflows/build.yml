@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        idf_version: ["v5.2", "v5.3", "release-v5.4"]
+        idf_version: ["release-v5.4", "release-v6.0"]
     steps:
       - uses: actions/checkout@v4
 

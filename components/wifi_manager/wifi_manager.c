@@ -580,7 +580,13 @@ esp_err_t wifi_manager_scan(wifi_mgr_scan_entry_t *entries, size_t max_entries, 
         .scan_type = WIFI_SCAN_TYPE_ACTIVE,
         .scan_time.active = {.min = 100, .max = 300},
     };
-    ESP_RETURN_ON_ERROR(esp_wifi_scan_start(&cfg, true), TAG, "scan start");
+    esp_err_t err = esp_wifi_scan_start(&cfg, true);
+    if (err == ESP_ERR_WIFI_STATE) {
+        /* A connection attempt owns the radio; map to a generic code so callers
+         * do not need esp_wifi.h. */
+        return ESP_ERR_INVALID_STATE;
+    }
+    ESP_RETURN_ON_ERROR(err, TAG, "scan start");
 
     uint16_t found = 0;
     ESP_RETURN_ON_ERROR(esp_wifi_scan_get_ap_num(&found), TAG, "scan count");
@@ -594,7 +600,7 @@ esp_err_t wifi_manager_scan(wifi_mgr_scan_entry_t *entries, size_t max_entries, 
         esp_wifi_clear_ap_list();
         return ESP_ERR_NO_MEM;
     }
-    esp_err_t err = esp_wifi_scan_get_ap_records(&found, records);
+    err = esp_wifi_scan_get_ap_records(&found, records);
     if (err != ESP_OK) {
         free(records);
         return err;

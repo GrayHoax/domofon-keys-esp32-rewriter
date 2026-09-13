@@ -413,7 +413,7 @@ static esp_err_t h_wifi_scan(httpd_req_t *req)
     esp_err_t err = wifi_manager_scan(entries, SCAN_MAX_ENTRIES, &count);
     if (err != ESP_OK) {
         free(entries);
-        if (err == ESP_ERR_WIFI_STATE) {
+        if (err == ESP_ERR_INVALID_STATE) {
             return send_error(req, "503 Service Unavailable", "busy",
                               "Идёт подключение к сети, повторите сканирование позже");
         }
