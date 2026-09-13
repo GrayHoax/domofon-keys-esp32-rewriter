@@ -1,8 +1,11 @@
 # Target is chosen with `idf.py set-target esp32c3|esp32c6` (see README);
 # pin defaults follow the target in main/Kconfig.projbuild.
 
-# Partition table: single large app + NVS (no OTA in this project)
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+# Flash layout: 4 MB modules (ESP-C3-12F, ESP32-C6 kits); custom table with
+# a 1.5 MB app slot and a dedicated 2.4 MB NVS partition for the key database.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # FreeRTOS tick 1 kHz gives 1 ms vTaskDelay granularity (used for RW1990 programming pulses)
 CONFIG_FREERTOS_HZ=1000

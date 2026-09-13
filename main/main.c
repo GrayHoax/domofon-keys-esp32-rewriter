@@ -3,9 +3,9 @@
  * @brief RW1990 / DS1990A key programmer for ESP32-C6.
  *
  * Boot sequence:
- *   1. NVS (Wi-Fi credentials live here)
+ *   1. NVS (Wi-Fi credentials) and the key database partition
  *   2. Status LED
- *   3. 1-Wire reader service
+ *   3. 1-Wire reader service (every clean read is stored in the database)
  *   4. Wi-Fi manager (station with AP fallback) + captive DNS glue
  *   5. HTTP server with the web UI
  */
@@ -22,6 +22,7 @@
 #include "sdkconfig.h"
 
 #include "ibutton.h"
+#include "keydb.h"
 #include "wifi_manager.h"
 #include "captive_dns.h"
 #include "web_server.h"
@@ -71,11 +72,19 @@ static void on_wifi_mgr_event(void *arg, esp_event_base_t base, int32_t id, void
     }
 }
 
+/** Every key that reads cleanly is recorded; the database rejects duplicates itself. */
 static void on_key_event(const ibutton_reader_state_t *state, void *ctx)
 {
     (void)ctx;
-    if (state->present && state->crc_ok) {
-        status_led_flash(STATUS_LED_FLASH_KEY_SEEN);
+    if (!state->present || !state->crc_ok) {
+        return;
+    }
+    status_led_flash(STATUS_LED_FLASH_KEY_SEEN);
+
+    bool added = false;
+    esp_err_t err = keydb_add(&state->key, "", &added);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "key not saved: %s", esp_err_to_name(err));
     }
 }
 
@@ -99,6 +108,7 @@ void app_main(void)
     ESP_LOGI(TAG, "RW1990 programmer starting");
 
     ESP_ERROR_CHECK(nvs_init());
+    ESP_ERROR_CHECK(keydb_init());
     ESP_ERROR_CHECK(status_led_init());
 
     const ibutton_config_t reader_cfg = {

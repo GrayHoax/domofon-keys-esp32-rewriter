@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "main.c"
     INCLUDE_DIRS "."
-    PRIV_REQUIRES nvs_flash esp_event ibutton wifi_manager captive_dns web_server status_led
+    PRIV_REQUIRES nvs_flash esp_event ibutton keydb wifi_manager captive_dns web_server status_led
 )

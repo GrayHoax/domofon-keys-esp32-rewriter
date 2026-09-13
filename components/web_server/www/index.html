@@ -36,11 +36,11 @@
   input.mono { font-family: ui-monospace, Consolas, monospace; letter-spacing: .08em; text-transform: uppercase; }
   .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
   .row > * { flex: 1 1 auto; }
-  button.btn { padding: 10px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--card2); color: var(--text); font-size: 15px; cursor: pointer; }
-  button.btn:hover { border-color: var(--accent); }
-  button.btn:disabled { opacity: .5; cursor: default; }
-  button.btn.primary { background: var(--accent); color: #0b1220; border-color: var(--accent); font-weight: 600; }
-  button.btn.danger { border-color: var(--err); color: var(--err); }
+  .btn { display: inline-block; padding: 10px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--card2); color: var(--text); font-size: 15px; cursor: pointer; }
+  .btn:hover { border-color: var(--accent); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn.primary { background: var(--accent); color: #0b1220; border-color: var(--accent); font-weight: 600; }
+  .btn.danger { border-color: var(--err); color: var(--err); }
   .check { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 14px; }
   .check input { width: 18px; height: 18px; }
   .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-size: 14px; }
@@ -54,6 +54,20 @@
   .log { font: 13px/1.5 ui-monospace, Consolas, monospace; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; max-height: 220px; overflow: auto; }
   .log div { white-space: pre-wrap; }
   .log .ok { color: var(--ok); } .log .err { color: var(--err); } .log .warn { color: var(--warn); }
+  table.keys { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.keys th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  table.keys td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  table.keys td.id { font-family: ui-monospace, Consolas, monospace; letter-spacing: .05em; white-space: nowrap; }
+  table.keys input { padding: 6px 8px; font-size: 14px; }
+  table.keys .acts { white-space: nowrap; text-align: right; }
+  table.keys .acts button { padding: 5px 9px; font-size: 13px; margin-left: 4px; }
+  .tablewrap { overflow-x: auto; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .toolbar input[type=text] { flex: 1 1 200px; }
+  .badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--card2); color: var(--muted); margin-left: 8px; vertical-align: middle; }
+  dialog { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 18px; max-width: 420px; width: 90vw; }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  dialog h3 { margin: 0 0 8px; font-size: 16px; }
   .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--card2); border: 1px solid var(--border); padding: 10px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
   .toast.show { opacity: 1; }
   .toast.ok { border-color: var(--ok); } .toast.err { border-color: var(--err); }
@@ -66,6 +80,7 @@
 </header>
 <nav>
   <button data-tab="key" class="active">Ключ</button>
+  <button data-tab="db">База</button>
   <button data-tab="net">Сеть</button>
   <button data-tab="sys">Система</button>
 </nav>
@@ -77,6 +92,7 @@
       <h2>Считыватель</h2>
       <div id="keyId" class="keyid none">Приложите ключ…</div>
       <div id="keyHint" class="hint"></div>
+      <div id="keyDb" class="hint"></div>
       <div class="row">
         <button class="btn" id="btnRead">Прочитать</button>
         <button class="btn" id="btnUse" disabled>В поле записи</button>
@@ -104,6 +120,45 @@
     <div class="card">
       <h2>Журнал</h2>
       <div id="log" class="log"></div>
+    </div>
+  </section>
+
+  <!-- ===================== База ===================== -->
+  <section class="tab" id="tab-db">
+    <div class="card">
+      <h2>База ключей <span id="dbCount" class="badge">—</span></h2>
+      <div class="toolbar">
+        <input type="text" id="dbFilter" placeholder="Поиск по ID или названию" autocomplete="off">
+        <button class="btn" id="btnDbRefresh">Обновить</button>
+        <button class="btn" id="btnDbAdd">Добавить вручную</button>
+      </div>
+      <div class="hint">Каждый корректно считанный ключ попадает в базу автоматически; повторы не сохраняются. Название — до 120 символов, кириллица и латиница.</div>
+      <div class="tablewrap">
+        <table class="keys">
+          <thead><tr><th>ID</th><th>Название</th><th></th></tr></thead>
+          <tbody id="dbBody"><tr><td colspan="3" class="hint">Загрузка…</td></tr></tbody>
+        </table>
+      </div>
+      <div id="dbStats" class="hint"></div>
+    </div>
+
+    <div class="card">
+      <h2>Файл базы</h2>
+      <div class="row">
+        <a class="btn" id="btnExport" href="/api/keys/export" download="rw1990-keys.jsonl" style="text-align:center;text-decoration:none">Сохранить в файл</a>
+      </div>
+      <label for="importFile">Загрузить из файла (.jsonl, экспорт этого устройства)</label>
+      <input type="file" id="importFile" accept=".jsonl,.json,.txt,application/x-ndjson,application/json,text/plain">
+      <label for="importMode">Режим загрузки</label>
+      <select id="importMode">
+        <option value="merge">Дополнить: добавить только новые ключи (с контролем уникальности)</option>
+        <option value="replace">Заменить всю базу: текущие ключи будут удалены</option>
+      </select>
+      <div class="row">
+        <button class="btn primary" id="btnImport">Загрузить</button>
+        <button class="btn danger" id="btnDbClear">Очистить базу</button>
+      </div>
+      <div id="importResult" class="hint"></div>
     </div>
   </section>
 
@@ -167,6 +222,23 @@
   </section>
 </main>
 
+<dialog id="writeDlg">
+  <h3>Записать ключ</h3>
+  <div id="writeDlgId" class="keyid" style="font-size:20px"></div>
+  <div id="writeDlgName" class="hint"></div>
+  <label for="writeDlgVariant">Тип заготовки</label>
+  <select id="writeDlgVariant">
+    <option value="rw1990v1">RW1990.1 (0xD1, инверсные данные)</option>
+    <option value="rw1990v2">RW1990.2 (0x1D, прямые данные)</option>
+  </select>
+  <div class="hint">Приложите заготовку к считывателю и не отрывайте до конца записи (~1 с).</div>
+  <div class="row">
+    <button class="btn primary" id="writeDlgOk">Записать</button>
+    <button class="btn" id="writeDlgCancel">Отмена</button>
+  </div>
+  <div id="writeDlgResult" class="hint"></div>
+</dialog>
+
 <div id="toast" class="toast"></div>
 
 <script>
@@ -174,7 +246,7 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
-  const state = { lastKey: null, busy: false };
+  const state = { lastKey: null, busy: false, db: [], dbDirty: true };
 
   /* ---------- helpers ---------- */
   async function api(path, opts) {
@@ -232,6 +304,7 @@
       document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('active', b === btn));
       document.querySelectorAll('section.tab').forEach((s) => s.classList.toggle('active', s.id === 'tab-' + btn.dataset.tab));
       if (btn.dataset.tab !== 'key') refreshStatus();
+      if (btn.dataset.tab === 'db' && state.dbDirty) loadDb();
     });
   });
 
@@ -249,12 +322,19 @@
       hint.textContent = r.crc_ok
         ? 'CRC верна · семейство 0x' + r.family.toString(16).toUpperCase().padStart(2, '0') + (r.family === 1 ? ' (DS1990A)' : '')
         : 'Ошибка CRC — плохой контакт или повреждённый ключ';
-      if (r.crc_ok && state.lastKey !== r.id) log('Прочитан ключ ' + fmtId(r.id), 'ok');
+      if (r.crc_ok && state.lastKey !== r.id) {
+        log('Прочитан ключ ' + fmtId(r.id) + (r.name ? ' — ' + r.name : ''), 'ok');
+        state.dbDirty = true;
+      }
       state.lastKey = r.id;
+      $('keyDb').textContent = !r.crc_ok ? '' : r.known
+        ? 'В базе' + (r.name ? ': ' + r.name : ' (без названия)')
+        : 'Сохраняется в базу…';
     } else {
       el.textContent = 'Приложите ключ…';
       el.className = 'keyid none';
       hint.textContent = '';
+      $('keyDb').textContent = '';
       state.lastKey = null;
     }
     $('btnUse').disabled = !(r.present && r.crc_ok);
@@ -344,6 +424,157 @@
       if (r.ok) { log('Проверка пройдена' + detail, 'ok'); toast('Ключ исправен', 'ok'); }
       else { log('Проверка не пройдена: ' + r.message + detail, r.match === false ? 'err' : 'warn'); toast(r.message, 'err'); }
     } finally { setBusy(false); }
+  });
+
+  /* ---------- key database ---------- */
+  const charCount = (str) => Array.from(str).length;
+
+  function renderDb() {
+    const q = $('dbFilter').value.trim().toLowerCase();
+    const qid = normId(q);
+    const rows = state.db.filter((k) => !q || (qid && k.id.includes(qid)) || k.name.toLowerCase().includes(q));
+    const body = $('dbBody');
+    body.innerHTML = '';
+    if (rows.length === 0) {
+      body.innerHTML = '<tr><td colspan="3" class="hint">' + (state.db.length ? 'Ничего не найдено' : 'База пуста — приложите ключ к считывателю') + '</td></tr>';
+      return;
+    }
+    for (const k of rows) {
+      const tr = document.createElement('tr');
+      const tdId = document.createElement('td'); tdId.className = 'id'; tdId.textContent = fmtId(k.id);
+      const tdName = document.createElement('td');
+      const inp = document.createElement('input');
+      inp.type = 'text'; inp.value = k.name; inp.placeholder = 'Без названия'; inp.maxLength = 120; inp.spellcheck = false;
+      inp.addEventListener('change', () => saveName(k, inp));
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+      tdName.appendChild(inp);
+      const tdActs = document.createElement('td'); tdActs.className = 'acts';
+      const bWrite = document.createElement('button'); bWrite.className = 'btn primary'; bWrite.textContent = 'Записать';
+      bWrite.addEventListener('click', () => openWriteDialog(k));
+      const bDel = document.createElement('button'); bDel.className = 'btn danger'; bDel.textContent = 'Удалить';
+      bDel.addEventListener('click', () => deleteKey(k));
+      tdActs.append(bWrite, bDel);
+      tr.append(tdId, tdName, tdActs);
+      body.appendChild(tr);
+    }
+  }
+
+  function renderDbStats(st) {
+    if (!st) return;
+    $('dbCount').textContent = st.count;
+    const pct = st.total_entries ? Math.round(st.used_entries * 100 / st.total_entries) : 0;
+    $('dbStats').textContent = 'Ключей: ' + st.count + ' · занято ' + pct + '% хранилища (' + st.used_entries + ' из ' + st.total_entries + ' блоков)';
+  }
+
+  async function loadDb() {
+    try {
+      const r = await api('/api/keys');
+      if (!r.ok) { toast(r.message, 'err'); return; }
+      state.db = r.keys.sort((a, b) => b.seq - a.seq); // newest first
+      state.dbDirty = false;
+      renderDbStats(r.stats);
+      renderDb();
+    } catch (e) { toast('Нет связи с устройством', 'err'); }
+  }
+
+  async function saveName(k, inp) {
+    const name = inp.value.trim();
+    if (charCount(name) > 120) { toast('Название длиннее 120 символов', 'err'); inp.value = k.name; return; }
+    const r = await api('/api/keys/' + k.id, { method: 'PUT', body: JSON.stringify({ name }) });
+    if (r.ok) { k.name = r.name; inp.value = r.name; toast('Название сохранено', 'ok'); }
+    else { toast(r.message, 'err'); inp.value = k.name; }
+  }
+
+  async function deleteKey(k) {
+    if (!confirm('Удалить ключ ' + fmtId(k.id) + (k.name ? ' (' + k.name + ')' : '') + ' из базы?')) return;
+    const r = await api('/api/keys/' + k.id, { method: 'DELETE' });
+    toast(r.message, r.ok ? 'ok' : 'err');
+    if (r.ok) { state.db = state.db.filter((x) => x.id !== k.id); renderDbStats(r.stats); renderDb(); }
+  }
+
+  $('dbFilter').addEventListener('input', renderDb);
+  $('btnDbRefresh').addEventListener('click', loadDb);
+
+  $('btnDbAdd').addEventListener('click', async () => {
+    const raw = prompt('ID ключа (16 шестнадцатеричных цифр):', '');
+    if (raw === null) return;
+    const id = normId(raw);
+    if (id.length !== 16) { toast('ID должен содержать 16 шестнадцатеричных цифр', 'err'); return; }
+    const name = prompt('Название (необязательно, до 120 символов):', '') || '';
+    const r = await post('/api/keys', { id, name, fix_crc: true });
+    toast(r.message, r.ok ? 'ok' : 'err');
+    if (r.ok) loadDb();
+  });
+
+  $('btnDbClear').addEventListener('click', async () => {
+    if (!confirm('Удалить ВСЕ ключи из базы (' + state.db.length + ' шт.)? Отменить это будет невозможно.')) return;
+    if (prompt('Для подтверждения введите слово УДАЛИТЬ') !== 'УДАЛИТЬ') { toast('Отменено'); return; }
+    const r = await api('/api/keys', { method: 'DELETE' });
+    toast(r.message, r.ok ? 'ok' : 'err');
+    if (r.ok) loadDb();
+  });
+
+  $('btnImport').addEventListener('click', async () => {
+    const file = $('importFile').files[0];
+    if (!file) { toast('Выберите файл', 'err'); return; }
+    const mode = $('importMode').value;
+    if (mode === 'replace') {
+      if (!confirm('ЗАМЕНА ВСЕЙ БАЗЫ: текущие ' + state.db.length + ' ключ(ей) будут удалены и заменены содержимым файла «' + file.name + '». Продолжить?')) return;
+      if (prompt('Это действие необратимо. Для подтверждения введите слово ЗАМЕНИТЬ') !== 'ЗАМЕНИТЬ') { toast('Отменено'); return; }
+    } else if (!confirm('Дополнить базу ключами из файла «' + file.name + '»? Уже имеющиеся ключи останутся без изменений.')) {
+      return;
+    }
+    const btn = $('btnImport');
+    btn.disabled = true; btn.textContent = 'Загрузка…';
+    $('importResult').textContent = '';
+    try {
+      const res = await fetch('/api/keys/import?mode=' + mode, { method: 'POST', body: file, headers: { 'Content-Type': 'application/x-ndjson' } });
+      const r = await res.json();
+      if (r.ok) {
+        const msg = 'Строк: ' + r.total + ', добавлено: ' + r.added + ', уже было: ' + r.skipped + ', ошибок: ' + r.invalid + (r.full ? '. ХРАНИЛИЩЕ ЗАПОЛНЕНО — часть ключей не загружена' : '');
+        $('importResult').textContent = msg;
+        toast('Загрузка завершена', r.full ? 'err' : 'ok');
+        log('Импорт (' + (mode === 'replace' ? 'замена' : 'дополнение') + '): ' + msg, r.full ? 'warn' : 'ok');
+        $('importFile').value = '';
+        loadDb();
+      } else {
+        toast(r.message, 'err'); $('importResult').textContent = r.message;
+      }
+    } catch (e) {
+      toast('Нет связи с устройством', 'err');
+    } finally { btn.disabled = false; btn.textContent = 'Загрузить'; }
+  });
+
+  /* ---------- write from the database ---------- */
+  let writeTarget = null;
+  function openWriteDialog(k) {
+    writeTarget = k;
+    $('writeDlgId').textContent = fmtId(k.id);
+    $('writeDlgName').textContent = k.name || 'Без названия';
+    $('writeDlgVariant').value = $('variant').value;
+    $('writeDlgResult').textContent = '';
+    $('writeDlgResult').style.color = '';
+    $('writeDlgOk').disabled = false;
+    $('writeDlg').showModal();
+  }
+  $('writeDlgCancel').addEventListener('click', () => $('writeDlg').close());
+  $('writeDlgOk').addEventListener('click', async () => {
+    if (!writeTarget) return;
+    const variant = $('writeDlgVariant').value;
+    $('writeDlgOk').disabled = true;
+    $('writeDlgResult').style.color = '';
+    $('writeDlgResult').textContent = 'Запись…';
+    log('Запись ' + fmtId(writeTarget.id) + ' из базы (' + variant + ')…');
+    try {
+      const r = await post('/api/key/write', { id: writeTarget.id, variant, fix_crc: false });
+      $('writeDlgResult').textContent = r.message;
+      $('writeDlgResult').style.color = r.ok ? 'var(--ok)' : 'var(--err)';
+      log((r.ok ? 'Записано и проверено: ' + fmtId(r.id) : 'Ошибка записи: ' + r.message), r.ok ? 'ok' : 'err');
+      toast(r.message, r.ok ? 'ok' : 'err');
+      if (r.ok) setTimeout(() => $('writeDlg').close(), 1200);
+    } catch (e) {
+      $('writeDlgResult').textContent = 'Нет связи с устройством';
+    } finally { $('writeDlgOk').disabled = false; }
   });
 
   /* ---------- network ---------- */

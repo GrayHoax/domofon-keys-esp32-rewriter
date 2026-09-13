@@ -24,7 +24,7 @@ static const char *TAG = "ibutton";
 #define RW1990_LOCK_PULSE_US   10 /* Short (logic 1) pulse for the lock byte.  */
 
 #define BUS_MUTEX_TIMEOUT_MS 3000
-#define POLL_TASK_STACK      3072
+#define POLL_TASK_STACK      4096 /* Event callback may write to NVS. */
 #define POLL_TASK_PRIO       5
 
 static struct {

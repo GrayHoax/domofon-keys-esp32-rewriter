@@ -17,10 +17,11 @@
 #include "ibutton.h"
 #include "wifi_manager.h"
 #include "status_led.h"
+#include "keydb.h"
+#include "web_internal.h"
 
 static const char *TAG = "web";
 
-#define MAX_BODY_LEN       1024
 #define SCAN_MAX_ENTRIES   20
 #define VERIFY_DEFAULT_N   5
 #define VERIFY_MAX_N       50
@@ -35,7 +36,7 @@ static httpd_handle_t s_server;
 /* Response helpers                                                           */
 /* ------------------------------------------------------------------------- */
 
-static esp_err_t send_json(httpd_req_t *req, cJSON *root, const char *status)
+esp_err_t web_send_json(httpd_req_t *req, cJSON *root, const char *status)
 {
     char *body = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -51,29 +52,29 @@ static esp_err_t send_json(httpd_req_t *req, cJSON *root, const char *status)
     return err;
 }
 
-static esp_err_t send_error(httpd_req_t *req, const char *status, const char *code, const char *message)
+esp_err_t web_send_error(httpd_req_t *req, const char *status, const char *code, const char *message)
 {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddFalseToObject(root, "ok");
     cJSON_AddStringToObject(root, "error", code);
     cJSON_AddStringToObject(root, "message", message);
-    return send_json(req, root, status);
+    return web_send_json(req, root, status);
 }
 
 /** Read the request body and parse it as JSON. Sends the error response itself on failure. */
-static cJSON *read_json_body(httpd_req_t *req)
+cJSON *web_read_json_body(httpd_req_t *req)
 {
     if (req->content_len == 0) {
         return cJSON_CreateObject();
     }
-    if (req->content_len > MAX_BODY_LEN) {
-        send_error(req, "413 Payload Too Large", "body_too_large", "Request body exceeds limit");
+    if (req->content_len > WEB_MAX_JSON_BODY) {
+        web_send_error(req, "413 Payload Too Large", "body_too_large", "Request body exceeds limit");
         return NULL;
     }
 
     char *buf = malloc(req->content_len + 1);
     if (buf == NULL) {
-        send_error(req, "500 Internal Server Error", "no_mem", "Out of memory");
+        web_send_error(req, "500 Internal Server Error", "no_mem", "Out of memory");
         return NULL;
     }
 
@@ -96,24 +97,24 @@ static cJSON *read_json_body(httpd_req_t *req)
     cJSON *json = cJSON_Parse(buf);
     free(buf);
     if (json == NULL) {
-        send_error(req, "400 Bad Request", "bad_json", "Malformed JSON body");
+        web_send_error(req, "400 Bad Request", "bad_json", "Malformed JSON body");
     }
     return json;
 }
 
-static const char *json_string(const cJSON *obj, const char *key, const char *fallback)
+const char *web_json_string(const cJSON *obj, const char *key, const char *fallback)
 {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
     return cJSON_IsString(item) && item->valuestring ? item->valuestring : fallback;
 }
 
-static bool json_bool(const cJSON *obj, const char *key, bool fallback)
+bool web_json_bool(const cJSON *obj, const char *key, bool fallback)
 {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
     return cJSON_IsBool(item) ? cJSON_IsTrue(item) : fallback;
 }
 
-static int json_int(const cJSON *obj, const char *key, int fallback)
+int web_json_int(const cJSON *obj, const char *key, int fallback)
 {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
     return cJSON_IsNumber(item) ? item->valueint : fallback;
@@ -129,6 +130,11 @@ static void add_reader_state(cJSON *obj, const ibutton_reader_state_t *st)
         ibutton_key_to_str(&st->key, id);
         cJSON_AddStringToObject(obj, "id", id);
         cJSON_AddNumberToObject(obj, "family", st->key.rom[0]);
+
+        keydb_entry_t entry;
+        bool known = st->crc_ok && keydb_get(&st->key, &entry) == ESP_OK;
+        cJSON_AddBoolToObject(obj, "known", known);
+        cJSON_AddStringToObject(obj, "name", known ? entry.name : "");
     } else {
         cJSON_AddNullToObject(obj, "id");
     }
@@ -200,7 +206,7 @@ static esp_err_t h_status(httpd_req_t *req)
     cJSON *reader = cJSON_AddObjectToObject(root, "reader");
     add_reader_state(reader, &r);
 
-    return send_json(req, root, NULL);
+    return web_send_json(req, root, NULL);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -215,7 +221,7 @@ static esp_err_t h_key_get(httpd_req_t *req)
     cJSON *root = cJSON_CreateObject();
     cJSON_AddTrueToObject(root, "ok");
     add_reader_state(root, &st);
-    return send_json(req, root, NULL);
+    return web_send_json(req, root, NULL);
 }
 
 static esp_err_t h_key_read(httpd_req_t *req)
@@ -236,44 +242,44 @@ static esp_err_t h_key_read(httpd_req_t *req)
         if (err == ESP_OK) {
             status_led_flash(STATUS_LED_FLASH_KEY_SEEN);
         }
-        return send_json(req, root, NULL);
+        return web_send_json(req, root, NULL);
     }
     case ESP_ERR_NOT_FOUND:
-        return send_error(req, "404 Not Found", "no_device", "Ключ не обнаружен");
+        return web_send_error(req, "404 Not Found", "no_device", "Ключ не обнаружен");
     case ESP_ERR_INVALID_STATE:
-        return send_error(req, "409 Conflict", "bus_shorted", "Линия данных замкнута");
+        return web_send_error(req, "409 Conflict", "bus_shorted", "Линия данных замкнута");
     case ESP_ERR_TIMEOUT:
-        return send_error(req, "503 Service Unavailable", "busy", "Шина занята другой операцией");
+        return web_send_error(req, "503 Service Unavailable", "busy", "Шина занята другой операцией");
     default:
-        return send_error(req, "500 Internal Server Error", "internal", esp_err_to_name(err));
+        return web_send_error(req, "500 Internal Server Error", "internal", esp_err_to_name(err));
     }
 }
 
 static esp_err_t h_key_write(httpd_req_t *req)
 {
-    cJSON *body = read_json_body(req);
+    cJSON *body = web_read_json_body(req);
     if (body == NULL) {
         return ESP_FAIL;
     }
 
     /* Everything needed from the body is copied out before it is freed:
-     * json_string() returns pointers into the cJSON tree. */
+     * web_json_string() returns pointers into the cJSON tree. */
     ibutton_key_t key;
     ibutton_write_variant_t variant = IBUTTON_WRITE_RW1990_V1;
-    esp_err_t err = ibutton_key_from_str(json_string(body, "id", ""), &key);
-    esp_err_t variant_err = ibutton_write_variant_from_str(json_string(body, "variant", "rw1990v1"), &variant);
-    bool fix_crc = json_bool(body, "fix_crc", false);
+    esp_err_t err = ibutton_key_from_str(web_json_string(body, "id", ""), &key);
+    esp_err_t variant_err = ibutton_write_variant_from_str(web_json_string(body, "variant", "rw1990v1"), &variant);
+    bool fix_crc = web_json_bool(body, "fix_crc", false);
     cJSON_Delete(body);
 
     if (err != ESP_OK) {
-        return send_error(req, "400 Bad Request", "bad_id", "ID ключа должен содержать 16 шестнадцатеричных цифр");
+        return web_send_error(req, "400 Bad Request", "bad_id", "ID ключа должен содержать 16 шестнадцатеричных цифр");
     }
     if (variant_err != ESP_OK) {
-        return send_error(req, "400 Bad Request", "bad_variant", "Неизвестный тип заготовки");
+        return web_send_error(req, "400 Bad Request", "bad_variant", "Неизвестный тип заготовки");
     }
     if (!ibutton_key_crc_ok(&key)) {
         if (!fix_crc) {
-            return send_error(req, "400 Bad Request", "bad_crc",
+            return web_send_error(req, "400 Bad Request", "bad_crc",
                               "Контрольная сумма ID неверна (включите автоисправление CRC)");
         }
         ibutton_key_fix_crc(&key);
@@ -320,23 +326,23 @@ static esp_err_t h_key_write(httpd_req_t *req)
     if (res != IBUTTON_WRITE_OK) {
         status_led_flash(STATUS_LED_FLASH_ERROR);
     }
-    return send_json(req, root, status);
+    return web_send_json(req, root, status);
 }
 
 static esp_err_t h_key_verify(httpd_req_t *req)
 {
-    cJSON *body = read_json_body(req);
+    cJSON *body = web_read_json_body(req);
     if (body == NULL) {
         return ESP_FAIL;
     }
 
     ibutton_key_t expected;
-    esp_err_t err = ibutton_key_from_str(json_string(body, "id", ""), &expected);
-    int reads = json_int(body, "reads", VERIFY_DEFAULT_N);
+    esp_err_t err = ibutton_key_from_str(web_json_string(body, "id", ""), &expected);
+    int reads = web_json_int(body, "reads", VERIFY_DEFAULT_N);
     cJSON_Delete(body);
 
     if (err != ESP_OK) {
-        return send_error(req, "400 Bad Request", "bad_id", "ID ключа должен содержать 16 шестнадцатеричных цифр");
+        return web_send_error(req, "400 Bad Request", "bad_id", "ID ключа должен содержать 16 шестнадцатеричных цифр");
     }
     if (reads < 1) {
         reads = 1;
@@ -397,7 +403,7 @@ static esp_err_t h_key_verify(httpd_req_t *req)
     if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
         status_led_flash(STATUS_LED_FLASH_ERROR);
     }
-    return send_json(req, root, status);
+    return web_send_json(req, root, status);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -408,7 +414,7 @@ static esp_err_t h_wifi_scan(httpd_req_t *req)
 {
     wifi_mgr_scan_entry_t *entries = calloc(SCAN_MAX_ENTRIES, sizeof(*entries));
     if (entries == NULL) {
-        return send_error(req, "500 Internal Server Error", "no_mem", "Out of memory");
+        return web_send_error(req, "500 Internal Server Error", "no_mem", "Out of memory");
     }
 
     size_t count = 0;
@@ -416,10 +422,10 @@ static esp_err_t h_wifi_scan(httpd_req_t *req)
     if (err != ESP_OK) {
         free(entries);
         if (err == ESP_ERR_INVALID_STATE) {
-            return send_error(req, "503 Service Unavailable", "busy",
+            return web_send_error(req, "503 Service Unavailable", "busy",
                               "Идёт подключение к сети, повторите сканирование позже");
         }
-        return send_error(req, "500 Internal Server Error", "scan_failed", esp_err_to_name(err));
+        return web_send_error(req, "500 Internal Server Error", "scan_failed", esp_err_to_name(err));
     }
 
     cJSON *root = cJSON_CreateObject();
@@ -434,72 +440,72 @@ static esp_err_t h_wifi_scan(httpd_req_t *req)
         cJSON_AddItemToArray(list, n);
     }
     free(entries);
-    return send_json(req, root, NULL);
+    return web_send_json(req, root, NULL);
 }
 
 static esp_err_t h_wifi_sta_post(httpd_req_t *req)
 {
-    cJSON *body = read_json_body(req);
+    cJSON *body = web_read_json_body(req);
     if (body == NULL) {
         return ESP_FAIL;
     }
-    const char *ssid = json_string(body, "ssid", "");
-    const char *pass = json_string(body, "password", "");
+    const char *ssid = web_json_string(body, "ssid", "");
+    const char *pass = web_json_string(body, "password", "");
     esp_err_t err = wifi_manager_set_sta_credentials(ssid, pass);
     cJSON_Delete(body);
 
     if (err == ESP_ERR_INVALID_ARG) {
-        return send_error(req, "400 Bad Request", "bad_ssid", "Укажите имя сети");
+        return web_send_error(req, "400 Bad Request", "bad_ssid", "Укажите имя сети");
     }
     if (err == ESP_ERR_INVALID_SIZE) {
-        return send_error(req, "400 Bad Request", "bad_length",
+        return web_send_error(req, "400 Bad Request", "bad_length",
                           "SSID до 32 символов, пароль пустой или 8..64 символа");
     }
     if (err != ESP_OK) {
-        return send_error(req, "500 Internal Server Error", "save_failed", esp_err_to_name(err));
+        return web_send_error(req, "500 Internal Server Error", "save_failed", esp_err_to_name(err));
     }
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddTrueToObject(root, "ok");
     cJSON_AddStringToObject(root, "message", "Настройки сохранены, выполняется подключение");
-    return send_json(req, root, NULL);
+    return web_send_json(req, root, NULL);
 }
 
 static esp_err_t h_wifi_sta_delete(httpd_req_t *req)
 {
     esp_err_t err = wifi_manager_clear_sta_credentials();
     if (err != ESP_OK) {
-        return send_error(req, "500 Internal Server Error", "save_failed", esp_err_to_name(err));
+        return web_send_error(req, "500 Internal Server Error", "save_failed", esp_err_to_name(err));
     }
     cJSON *root = cJSON_CreateObject();
     cJSON_AddTrueToObject(root, "ok");
     cJSON_AddStringToObject(root, "message", "Настройки сети удалены, устройство работает как точка доступа");
-    return send_json(req, root, NULL);
+    return web_send_json(req, root, NULL);
 }
 
 static esp_err_t h_wifi_ap_post(httpd_req_t *req)
 {
-    cJSON *body = read_json_body(req);
+    cJSON *body = web_read_json_body(req);
     if (body == NULL) {
         return ESP_FAIL;
     }
-    const char *ssid = json_string(body, "ssid", "");
-    const char *pass = json_string(body, "password", "");
+    const char *ssid = web_json_string(body, "ssid", "");
+    const char *pass = web_json_string(body, "password", "");
     esp_err_t err = wifi_manager_set_ap_credentials(ssid, pass);
     cJSON_Delete(body);
 
     if (err == ESP_ERR_INVALID_SIZE) {
-        return send_error(req, "400 Bad Request", "bad_length",
+        return web_send_error(req, "400 Bad Request", "bad_length",
                           "SSID до 32 символов, пароль пустой (открытая сеть) или 8..64 символа");
     }
     if (err != ESP_OK) {
-        return send_error(req, "500 Internal Server Error", "save_failed", esp_err_to_name(err));
+        return web_send_error(req, "500 Internal Server Error", "save_failed", esp_err_to_name(err));
     }
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddTrueToObject(root, "ok");
     cJSON_AddStringToObject(root, "message", "Настройки точки доступа сохранены");
-    return send_json(req, root, NULL);
+    return web_send_json(req, root, NULL);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -517,7 +523,7 @@ static esp_err_t h_reboot(httpd_req_t *req)
     cJSON *root = cJSON_CreateObject();
     cJSON_AddTrueToObject(root, "ok");
     cJSON_AddStringToObject(root, "message", "Перезагрузка...");
-    esp_err_t err = send_json(req, root, NULL);
+    esp_err_t err = web_send_json(req, root, NULL);
 
     const esp_timer_create_args_t args = {.callback = reboot_timer_cb, .name = "reboot"};
     esp_timer_handle_t t;
@@ -546,7 +552,7 @@ esp_err_t web_server_start(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port = CONFIG_RW_HTTP_PORT;
     cfg.uri_match_fn = httpd_uri_match_wildcard;
-    cfg.max_uri_handlers = 16;
+    cfg.max_uri_handlers = 24;
     cfg.stack_size = 8192;
     cfg.lru_purge_enable = true;
 
@@ -564,6 +570,13 @@ esp_err_t web_server_start(void)
         {.uri = "/api/wifi/sta", .method = HTTP_POST, .handler = h_wifi_sta_post},
         {.uri = "/api/wifi/sta", .method = HTTP_DELETE, .handler = h_wifi_sta_delete},
         {.uri = "/api/wifi/ap", .method = HTTP_POST, .handler = h_wifi_ap_post},
+        {.uri = "/api/keys", .method = HTTP_GET, .handler = web_keys_list},
+        {.uri = "/api/keys", .method = HTTP_POST, .handler = web_keys_add},
+        {.uri = "/api/keys", .method = HTTP_DELETE, .handler = web_keys_clear},
+        {.uri = "/api/keys/export", .method = HTTP_GET, .handler = web_keys_export},
+        {.uri = "/api/keys/import", .method = HTTP_POST, .handler = web_keys_import},
+        {.uri = "/api/keys/*", .method = HTTP_PUT, .handler = web_keys_update},
+        {.uri = "/api/keys/*", .method = HTTP_DELETE, .handler = web_keys_delete},
         {.uri = "/api/system/reboot", .method = HTTP_POST, .handler = h_reboot},
         {.uri = "/*", .method = HTTP_GET, .handler = h_redirect},
     };
