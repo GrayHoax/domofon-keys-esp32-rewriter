@@ -153,6 +153,13 @@ static rgb_t mode_colour(status_led_mode_t mode, uint32_t tick)
     case STATUS_LED_MODE_AP:
         /* 1 s period, 20 % duty. */
         return (tick % 20) < 4 ? (rgb_t){0, 0, BRIGHT_HIGH} : (rgb_t){0, 0, 0};
+    case STATUS_LED_MODE_AP_FALLBACK:
+        /* Same blue pulse followed by a short red tick: "AP up because the
+         * home network is unreachable". */
+        if ((tick % 20) < 4) {
+            return (rgb_t){0, 0, BRIGHT_HIGH};
+        }
+        return (tick % 20) >= 7 && (tick % 20) < 9 ? (rgb_t){BRIGHT_HIGH, 0, 0} : (rgb_t){0, 0, 0};
     case STATUS_LED_MODE_CONNECTING:
         /* 300 ms period. */
         return (tick % 6) < 3 ? (rgb_t){BRIGHT_HIGH, BRIGHT_HIGH / 3, 0} : (rgb_t){0, 0, 0};

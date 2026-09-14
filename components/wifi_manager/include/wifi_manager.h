@@ -4,9 +4,11 @@
  *
  * Behaviour:
  *  - With stored station credentials the device tries to join the network.
- *    If it fails within CONFIG_RW_STA_CONNECT_TIMEOUT_S it raises its own
- *    access point (SSID "<prefix>-XXXXXX") and keeps retrying the station
- *    link every CONFIG_RW_STA_RETRY_INTERVAL_S while the AP stays up.
+ *    If no IP address is obtained within CONFIG_RW_STA_CONNECT_TIMEOUT_S
+ *    (also after an established link drops) it raises its own access point
+ *    (SSID "<prefix>-XXXXXX") and retries the station link every
+ *    CONFIG_RW_STA_RETRY_INTERVAL_S in the background while the AP stays up.
+ *    The AP is shut down only once the station link is back.
  *  - Without credentials the access point is started immediately.
  *  - Once the station link is established the AP is kept alive for
  *    CONFIG_RW_AP_LINGER_S so an operator connected to it can see the new
@@ -36,7 +38,8 @@ typedef enum {
     WIFI_MGR_EVENT_AP_STOPPED,
     WIFI_MGR_EVENT_STA_CONNECTING,
     WIFI_MGR_EVENT_STA_CONNECTED,    /**< Got IP; data: esp_ip4_addr_t STA address. */
-    WIFI_MGR_EVENT_STA_DISCONNECTED,
+    WIFI_MGR_EVENT_STA_DISCONNECTED, /**< An established link dropped; reconnecting. */
+    WIFI_MGR_EVENT_STA_FALLBACK,     /**< Station timeout: own AP raised, retrying in background. */
 } wifi_mgr_event_id_t;
 
 typedef enum {

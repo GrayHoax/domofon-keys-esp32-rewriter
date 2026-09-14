@@ -41,8 +41,8 @@ static struct {
     char ap_pass[WIFI_MGR_PASS_MAX + 1];
     bool ap_ssid_custom;
     bool sta_disabled;          /* Credentials cleared: ignore STA events.      */
-    int64_t connect_deadline_us;/* Keep reconnecting until this timestamp.      */
-    esp_timer_handle_t retry_timer;
+    esp_timer_handle_t fallback_timer; /* Raises the AP if no IP within timeout. */
+    esp_timer_handle_t retry_timer;    /* Next background attempt from fallback. */
     esp_timer_handle_t ap_linger_timer;
 } s;
 
@@ -233,26 +233,42 @@ static esp_err_t ap_stop(void)
     return esp_wifi_set_mode(WIFI_MODE_STA);
 }
 
-/** Begin a fresh connection session with a full timeout budget. */
-static void sta_connect_begin(void)
+/** (Re)start the window after which a still-missing station link raises the AP. */
+static void fallback_arm(void)
+{
+    esp_timer_stop(s.fallback_timer);
+    esp_timer_start_once(s.fallback_timer, (uint64_t)CONFIG_RW_STA_CONNECT_TIMEOUT_S * US_PER_S);
+}
+
+/**
+ * Begin a fresh connection session with a full timeout budget.
+ *
+ * @param background  true for periodic retries from AP fallback: the public
+ *                    state (and thus the LED) stays "ap_fallback" so the
+ *                    operator working through the AP sees no flicker.
+ */
+static void sta_connect_begin(bool background)
 {
     if (!s.status.sta_configured) {
         return;
     }
     s.sta_disabled = false;
-    s.connect_deadline_us = esp_timer_get_time() + (int64_t)CONFIG_RW_STA_CONNECT_TIMEOUT_S * US_PER_S;
     esp_timer_stop(s.retry_timer);
+    fallback_arm();
 
     esp_err_t err = apply_sta_config();
     if (err == ESP_OK) {
         err = esp_wifi_connect();
     }
     if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
+        /* Not fatal: the fallback timer still fires and the AP comes up. */
         ESP_LOGW(TAG, "connect start failed: %s", esp_err_to_name(err));
     }
-    ESP_LOGI(TAG, "connecting to \"%s\"", s.status.sta_ssid);
-    set_state(WIFI_MGR_STATE_CONNECTING);
-    post_event(WIFI_MGR_EVENT_STA_CONNECTING, NULL, 0);
+    ESP_LOGI(TAG, "connecting to \"%s\"%s", s.status.sta_ssid, background ? " (background retry)" : "");
+    if (!background) {
+        set_state(WIFI_MGR_STATE_CONNECTING);
+        post_event(WIFI_MGR_EVENT_STA_CONNECTING, NULL, 0);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -262,10 +278,44 @@ static void sta_connect_begin(void)
 static void retry_timer_cb(void *arg)
 {
     (void)arg;
-    if (s.status.sta_configured && !s.sta_disabled && s.status.state != WIFI_MGR_STATE_CONNECTED) {
-        ESP_LOGI(TAG, "periodic reconnect attempt");
-        sta_connect_begin();
+    if (s.status.sta_configured && !s.sta_disabled && s.status.state == WIFI_MGR_STATE_AP_FALLBACK) {
+        sta_connect_begin(true);
     }
+}
+
+/**
+ * Fires CONFIG_RW_STA_CONNECT_TIMEOUT_S after a connection session started
+ * and no IP address was obtained. Works regardless of how the attempt got
+ * stuck (no such network, wrong password, association without DHCP): it is
+ * the single place that decides to raise the access point.
+ */
+static void fallback_timer_cb(void *arg)
+{
+    (void)arg;
+    if (s.sta_disabled || !s.status.sta_configured || s.status.state == WIFI_MGR_STATE_CONNECTED) {
+        return;
+    }
+
+    bool already_fallback = (s.status.state == WIFI_MGR_STATE_AP_FALLBACK);
+    if (!already_fallback) {
+        ESP_LOGW(TAG, "\"%s\" unreachable for %d s, raising access point", s.status.sta_ssid,
+                 CONFIG_RW_STA_CONNECT_TIMEOUT_S);
+        set_state(WIFI_MGR_STATE_AP_FALLBACK);
+    } else {
+        ESP_LOGI(TAG, "background retry failed, staying on access point");
+    }
+
+    /* Abort whatever the driver is still doing so the radio is free for
+     * scans requested through the web UI; the resulting disconnect event is
+     * ignored in the ap_fallback state. */
+    esp_wifi_disconnect();
+    ap_start();
+    if (!already_fallback) {
+        post_event(WIFI_MGR_EVENT_STA_FALLBACK, NULL, 0);
+    }
+
+    esp_timer_stop(s.retry_timer);
+    esp_timer_start_once(s.retry_timer, (uint64_t)CONFIG_RW_STA_RETRY_INTERVAL_S * US_PER_S);
 }
 
 static void ap_linger_timer_cb(void *arg)
@@ -289,30 +339,33 @@ static void on_sta_disconnected(const wifi_event_sta_disconnected_t *ev)
     s.status.sta_rssi = 0;
     unlock();
 
-    if (was_connected) {
-        post_event(WIFI_MGR_EVENT_STA_DISCONNECTED, NULL, 0);
-        /* Link dropped: open a new reconnect window before falling back. */
-        s.connect_deadline_us = esp_timer_get_time() + (int64_t)CONFIG_RW_STA_CONNECT_TIMEOUT_S * US_PER_S;
-    }
-
     if (s.sta_disabled || !s.status.sta_configured) {
         return;
     }
 
     ESP_LOGW(TAG, "disconnected from \"%s\" (reason %d)", s.status.sta_ssid, ev ? ev->reason : -1);
 
-    if (esp_timer_get_time() < s.connect_deadline_us) {
-        set_state(WIFI_MGR_STATE_CONNECTING);
-        esp_wifi_connect();
+    if (s.status.state == WIFI_MGR_STATE_AP_FALLBACK) {
+        /* A background retry failed (or was aborted by the fallback timer):
+         * the AP already serves, schedule the next attempt and go quiet. */
+        esp_timer_stop(s.fallback_timer);
+        esp_timer_stop(s.retry_timer);
+        esp_timer_start_once(s.retry_timer, (uint64_t)CONFIG_RW_STA_RETRY_INTERVAL_S * US_PER_S);
         return;
     }
 
-    /* Timeout exhausted: raise the AP and retry in the background. */
-    ESP_LOGW(TAG, "connection timeout, falling back to access point");
-    ap_start();
-    set_state(WIFI_MGR_STATE_AP_FALLBACK);
-    esp_timer_stop(s.retry_timer);
-    esp_timer_start_once(s.retry_timer, (uint64_t)CONFIG_RW_STA_RETRY_INTERVAL_S * US_PER_S);
+    if (was_connected) {
+        post_event(WIFI_MGR_EVENT_STA_DISCONNECTED, NULL, 0);
+        /* Link dropped: open a fresh reconnect window before falling back. */
+        fallback_arm();
+    }
+
+    /* Keep trying until the fallback timer says otherwise. */
+    set_state(WIFI_MGR_STATE_CONNECTING);
+    esp_err_t err = esp_wifi_connect();
+    if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
+        ESP_LOGW(TAG, "reconnect failed: %s", esp_err_to_name(err));
+    }
 }
 
 static void on_got_ip(const ip_event_got_ip_t *ev)
@@ -322,6 +375,7 @@ static void on_got_ip(const ip_event_got_ip_t *ev)
     unlock();
 
     ESP_LOGI(TAG, "connected, IP " IPSTR, IP2STR(&ev->ip_info.ip));
+    esp_timer_stop(s.fallback_timer);
     esp_timer_stop(s.retry_timer);
     set_state(WIFI_MGR_STATE_CONNECTED);
     post_event(WIFI_MGR_EVENT_STA_CONNECTED, &ev->ip_info.ip, sizeof(ev->ip_info.ip));
@@ -341,7 +395,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
         switch (id) {
         case WIFI_EVENT_STA_START:
             if (s.status.sta_configured) {
-                sta_connect_begin();
+                sta_connect_begin(false);
             }
             break;
 
@@ -439,8 +493,10 @@ esp_err_t wifi_manager_init(void)
     ESP_RETURN_ON_ERROR(esp_read_mac(s.status.mac, ESP_MAC_WIFI_STA), TAG, "read mac");
     ESP_RETURN_ON_ERROR(load_config(), TAG, "load config");
 
+    const esp_timer_create_args_t fallback_args = {.callback = fallback_timer_cb, .name = "wifi_fallback"};
     const esp_timer_create_args_t retry_args = {.callback = retry_timer_cb, .name = "wifi_retry"};
     const esp_timer_create_args_t linger_args = {.callback = ap_linger_timer_cb, .name = "ap_linger"};
+    ESP_RETURN_ON_ERROR(esp_timer_create(&fallback_args, &s.fallback_timer), TAG, "fallback timer");
     ESP_RETURN_ON_ERROR(esp_timer_create(&retry_args, &s.retry_timer), TAG, "retry timer");
     ESP_RETURN_ON_ERROR(esp_timer_create(&linger_args, &s.ap_linger_timer), TAG, "linger timer");
 
@@ -489,13 +545,15 @@ esp_err_t wifi_manager_set_sta_credentials(const char *ssid, const char *passwor
     esp_timer_stop(s.ap_linger_timer);
 
     if (state == WIFI_MGR_STATE_CONNECTED || state == WIFI_MGR_STATE_CONNECTING) {
-        /* The disconnect event re-enters sta_connect logic with the new config. */
+        /* The disconnect event re-enters the connect logic with the new config. */
         s.sta_disabled = false;
-        s.connect_deadline_us = esp_timer_get_time() + (int64_t)CONFIG_RW_STA_CONNECT_TIMEOUT_S * US_PER_S;
+        esp_timer_stop(s.retry_timer);
+        fallback_arm();
         apply_sta_config();
         esp_wifi_disconnect();
     } else {
-        sta_connect_begin();
+        /* From AP mode this is an operator action: show it as "connecting". */
+        sta_connect_begin(false);
     }
     return ESP_OK;
 }
@@ -513,6 +571,7 @@ esp_err_t wifi_manager_clear_sta_credentials(void)
     unlock();
 
     s.sta_disabled = true;
+    esp_timer_stop(s.fallback_timer);
     esp_timer_stop(s.retry_timer);
     esp_timer_stop(s.ap_linger_timer);
     ESP_LOGI(TAG, "station credentials cleared");

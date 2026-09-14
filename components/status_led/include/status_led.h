@@ -21,9 +21,10 @@ extern "C" {
 
 typedef enum {
     STATUS_LED_MODE_BOOT = 0,      /**< Dim white.                    */
-    STATUS_LED_MODE_AP,            /**< Slow blue blink: own network. */
-    STATUS_LED_MODE_CONNECTING,    /**< Fast amber blink.             */
-    STATUS_LED_MODE_CONNECTED,     /**< Steady dim green.             */
+    STATUS_LED_MODE_AP,            /**< Slow blue blink: own network, no station configured.   */
+    STATUS_LED_MODE_AP_FALLBACK,   /**< Blue blink with a red tick: own network, station lost. */
+    STATUS_LED_MODE_CONNECTING,    /**< Fast amber blink.                                      */
+    STATUS_LED_MODE_CONNECTED,     /**< Steady dim green.                                      */
 } status_led_mode_t;
 
 typedef enum {

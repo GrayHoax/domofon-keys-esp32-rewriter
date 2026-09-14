@@ -94,10 +94,11 @@ menu "RW1990 Programmer"
         config RW_STA_CONNECT_TIMEOUT_S
             int "Station connect timeout (s)"
             range 5 300
-            default 20
+            default 30
             help
-                Time to keep retrying the configured network before raising the
-                access point.
+                If the configured network yields no IP address within this time
+                (at boot or after an established link drops), the device raises
+                its own access point and keeps retrying in the background.
 
         config RW_STA_RETRY_INTERVAL_S
             int "Station retry interval while in AP fallback (s)"

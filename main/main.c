@@ -34,6 +34,24 @@ static const char *TAG = "main";
 /* Glue between modules                                                       */
 /* ------------------------------------------------------------------------- */
 
+/** The LED mirrors the network state machine, not individual events. */
+static status_led_mode_t led_mode_for(const wifi_mgr_status_t *st)
+{
+    switch (st->state) {
+    case WIFI_MGR_STATE_CONNECTED:
+        return STATUS_LED_MODE_CONNECTED;
+    case WIFI_MGR_STATE_AP_ONLY:
+        return STATUS_LED_MODE_AP;
+    case WIFI_MGR_STATE_AP_FALLBACK:
+        return STATUS_LED_MODE_AP_FALLBACK;
+    case WIFI_MGR_STATE_CONNECTING:
+        return STATUS_LED_MODE_CONNECTING;
+    case WIFI_MGR_STATE_IDLE:
+    default:
+        return STATUS_LED_MODE_BOOT;
+    }
+}
+
 static void on_wifi_mgr_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
@@ -42,34 +60,17 @@ static void on_wifi_mgr_event(void *arg, esp_event_base_t base, int32_t id, void
     switch ((wifi_mgr_event_id_t)id) {
     case WIFI_MGR_EVENT_AP_STARTED:
         captive_dns_start(*(const esp_ip4_addr_t *)data);
-        status_led_set_mode(STATUS_LED_MODE_AP);
         break;
-
     case WIFI_MGR_EVENT_AP_STOPPED:
         captive_dns_stop();
         break;
-
-    case WIFI_MGR_EVENT_STA_CONNECTING: {
-        wifi_mgr_status_t st;
-        wifi_manager_get_status(&st);
-        /* While the AP is up the blue pattern is more useful to the operator. */
-        if (!st.ap_active) {
-            status_led_set_mode(STATUS_LED_MODE_CONNECTING);
-        }
+    default:
         break;
     }
 
-    case WIFI_MGR_EVENT_STA_CONNECTED:
-        status_led_set_mode(STATUS_LED_MODE_CONNECTED);
-        break;
-
-    case WIFI_MGR_EVENT_STA_DISCONNECTED: {
-        wifi_mgr_status_t st;
-        wifi_manager_get_status(&st);
-        status_led_set_mode(st.ap_active ? STATUS_LED_MODE_AP : STATUS_LED_MODE_CONNECTING);
-        break;
-    }
-    }
+    wifi_mgr_status_t st;
+    wifi_manager_get_status(&st);
+    status_led_set_mode(led_mode_for(&st));
 }
 
 /** Every key that reads cleanly is recorded; the database rejects duplicates itself. */
