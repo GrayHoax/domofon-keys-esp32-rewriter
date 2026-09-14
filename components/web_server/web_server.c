@@ -12,6 +12,7 @@
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "cJSON.h"
+#include "driver/gpio.h"
 #include "sdkconfig.h"
 
 #include "ibutton.h"
@@ -304,6 +305,7 @@ static esp_err_t h_key_analog(httpd_req_t *req)
     cJSON_AddNumberToObject(sig, "swing", r.adc_max - r.adc_min);
     cJSON_AddNumberToObject(sig, "edges", r.edges);
     cJSON_AddNumberToObject(sig, "period_us", r.period_us);
+    cJSON_AddNumberToObject(sig, "gpio_level", gpio_get_level(CONFIG_RW_ONEWIRE_GPIO));
     return web_send_json(req, root, NULL);
 }
 

@@ -19,6 +19,7 @@
 #include "esp_system.h"
 #include "esp_netif_ip_addr.h"
 #include "nvs_flash.h"
+#include "driver/gpio.h"
 #include "sdkconfig.h"
 
 #include "ibutton.h"
@@ -125,6 +126,32 @@ static void on_write_job_done(const ibutton_write_job_t *job, void *ctx)
 /* Initialisation                                                             */
 /* ------------------------------------------------------------------------- */
 
+/**
+ * One look at the idle key line right after the drivers are up. With
+ * nothing attached the pull-up must read high on the digital input and
+ * near full scale on the ADC; anything else is wiring or a pin conflict,
+ * and the log line says which.
+ */
+static void line_self_test(void)
+{
+    int level = gpio_get_level(CONFIG_RW_ONEWIRE_GPIO);
+    activekey_result_t adc = {0};
+    bool have_adc = activekey_available() && ibutton_active_probe(&adc) != ESP_ERR_TIMEOUT;
+
+    if (have_adc) {
+        ESP_LOGI(TAG, "line self-test: GPIO%d reads %s, ADC idle %u..%u of 4095", CONFIG_RW_ONEWIRE_GPIO,
+                 level ? "HIGH" : "LOW", adc.adc_min, adc.adc_max);
+    } else {
+        ESP_LOGI(TAG, "line self-test: GPIO%d reads %s", CONFIG_RW_ONEWIRE_GPIO, level ? "HIGH" : "LOW");
+    }
+    if (level == 0 && have_adc && adc.adc_max > 3000) {
+        ESP_LOGE(TAG, "line self-test: ADC sees the line high but the digital input reads low - "
+                      "GPIO%d input path is blocked by the analog configuration", CONFIG_RW_ONEWIRE_GPIO);
+    } else if (level == 0) {
+        ESP_LOGW(TAG, "line self-test: data line is low with no key - check the pull-up to 3V3 and the wiring");
+    }
+}
+
 static esp_err_t nvs_init(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -158,6 +185,7 @@ void app_main(void)
     ESP_ERROR_CHECK(ibutton_init(&reader_cfg));
     ibutton_set_event_callback(on_key_event, NULL);
     ibutton_set_job_callback(on_write_job_done, NULL);
+    line_self_test();
 
     /* The default event loop is created inside wifi_manager_init(); register
      * our handler first so the initial AP_STARTED event is not missed. */
