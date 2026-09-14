@@ -118,6 +118,7 @@
         <option value="rw1990v1">RW1990.1 (0xD1, инверсные данные)</option>
         <option value="rw1990v2">RW1990.2 (0x1D, прямые данные)</option>
         <option value="tm01">TM01A / TM01C (0xC1/0xC5, режим Dallas)</option>
+        <option value="tm01_cyfral">TM01A → Cyfral (из Dallas-контейнера, финализация необратима)</option>
       </select>
       <div class="check"><input type="checkbox" id="fixCrc"><label for="fixCrc" style="margin:0">Автоисправление CRC</label></div>
       <div class="row">
@@ -242,6 +243,7 @@
     <option value="rw1990v1">RW1990.1 (0xD1, инверсные данные)</option>
     <option value="rw1990v2">RW1990.2 (0x1D, прямые данные)</option>
     <option value="tm01">TM01A / TM01C (0xC1/0xC5, режим Dallas)</option>
+    <option value="tm01_cyfral">TM01A → Cyfral (из Dallas-контейнера, финализация необратима)</option>
   </select>
   <div class="hint">Нажмите «Записать», затем приложите заготовку к контактам и не отрывайте до конца записи (~1 с).</div>
   <div class="row">
@@ -259,7 +261,7 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
-  const state = { lastKey: null, busy: false, db: [], dbDirty: true };
+  const state = { lastKey: null, lastContainer: null, busy: false, db: [], dbDirty: true };
 
   /* ---------- helpers ---------- */
   async function api(path, opts) {
@@ -342,12 +344,23 @@
       const label = r.proto === 'cyfral' ? 'Cyfral' : 'Metakom';
       el.textContent = label + ' ' + r.code;
       el.className = 'keyid';
-      hint.textContent = 'Активный ключ ' + label + ' (или TM01A, финализированная под ' + label + '). Код показан в порядке приёма; в базу 1-Wire не сохраняется.';
       const tag = r.proto + ':' + r.code;
-      if (state.lastKey !== tag) log('Прочитан ключ ' + label + ' ' + r.code, 'ok');
-      state.lastKey = tag;
-      $('keyDb').textContent = '';
-      $('btnUse').disabled = true;
+      if (r.proto === 'cyfral') {
+        hint.textContent = 'Активный ключ Cyfral. Dallas-контейнер: ' + fmtId(r.container_id) +
+          ' — сохраняется в базу; его можно записать на RW1990 (архив) или на TM01A как Cyfral (копия).';
+        if (state.lastKey !== tag) { log('Прочитан ключ Cyfral ' + r.code + ' → контейнер ' + fmtId(r.container_id), 'ok'); state.dbDirty = true; }
+        $('keyDb').textContent = r.known ? 'В базе' + (r.name ? ': ' + r.name : ' (без названия)') : 'Сохраняется в базу…';
+        state.lastKey = tag;
+        state.lastContainer = r.container_id;
+        $('btnUse').disabled = false;
+      } else {
+        hint.textContent = 'Активный ключ ' + label + ' (или TM01A, финализированная под ' + label + '). Код показан в порядке приёма; в базу не сохраняется.';
+        if (state.lastKey !== tag) log('Прочитан ключ ' + label + ' ' + r.code, 'ok');
+        state.lastKey = tag;
+        state.lastContainer = null;
+        $('keyDb').textContent = '';
+        $('btnUse').disabled = true;
+      }
       return;
     } else if (r.present) {
       el.textContent = fmtId(r.id);
@@ -355,7 +368,9 @@
       hint.textContent = (r.crc_ok
         ? 'CRC верна · семейство 0x' + r.family.toString(16).toUpperCase().padStart(2, '0') + (r.family === 1 ? ' (DS1990A)' : '')
         : 'Ошибка CRC — плохой контакт или повреждённый ключ')
+        + (r.cyfral_code ? ' · Dallas-контейнер с кодом Cyfral ' + r.cyfral_code + ' (для рабочей копии пишите на TM01A как Cyfral)' : '')
         + (r.tm01_timing ? ' · отвечает только на тайминги TM01 — для записи выберите тип TM01A/TM01C' : '');
+      state.lastContainer = null;
       if (r.tm01_timing && $('variant').value !== 'tm01' && !state.busy) $('variant').value = 'tm01';
       if (r.crc_ok && state.lastKey !== r.id) {
         log('Прочитан ключ ' + fmtId(r.id) + (r.name ? ' — ' + r.name : ''), 'ok');
@@ -400,7 +415,8 @@
   });
 
   $('btnUse').addEventListener('click', () => {
-    if (state.lastKey) { $('writeId').value = fmtId(state.lastKey); validateWriteId(); }
+    const id = state.lastContainer || state.lastKey;
+    if (id && normId(id).length === 16) { $('writeId').value = fmtId(id); validateWriteId(); }
   });
 
   /* ---------- write ---------- */
@@ -493,6 +509,7 @@
     if (!id) { toast('Введите корректный ID ключа', 'err'); return; }
     const variant = $('variant').value;
     if (!confirm('Записать ' + fmtId(id) + ' в заготовку ' + $('variant').selectedOptions[0].text.split(' ')[0] + '?')) return;
+    if (variant === 'tm01_cyfral' && !confirm('Заготовка будет финализирована как Cyfral. После этого её нельзя перезаписать и она перестанет читаться как 1-Wire. Продолжить?')) return;
     log('Ожидание заготовки для записи ' + fmtId(id) + ' (' + variant + ')…');
     mainTabWrite(id, (onProgress) => armedWrite(id, variant, $('fixCrc').checked, onProgress));
   });
@@ -539,6 +556,7 @@
     for (const k of rows) {
       const tr = document.createElement('tr');
       const tdId = document.createElement('td'); tdId.className = 'id'; tdId.textContent = fmtId(k.id);
+      if (k.cyfral) { const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'Cyfral ' + k.cyfral; tdId.appendChild(b); }
       const tdName = document.createElement('td');
       const inp = document.createElement('input');
       inp.type = 'text'; inp.value = k.name; inp.placeholder = 'Без названия'; inp.maxLength = 120; inp.spellcheck = false;
@@ -647,8 +665,8 @@
   function openWriteDialog(k) {
     writeTarget = k;
     $('writeDlgId').textContent = fmtId(k.id);
-    $('writeDlgName').textContent = k.name || 'Без названия';
-    $('writeDlgVariant').value = $('variant').value;
+    $('writeDlgName').textContent = (k.name || 'Без названия') + (k.cyfral ? ' · Cyfral ' + k.cyfral + ': для рабочей копии выберите «TM01A → Cyfral», RW1990 сохранит только контейнер' : '');
+    $('writeDlgVariant').value = k.cyfral ? 'tm01_cyfral' : ($('variant').value === 'tm01_cyfral' ? 'rw1990v1' : $('variant').value);
     $('writeDlgResult').textContent = '';
     $('writeDlgResult').style.color = '';
     $('writeDlgOk').disabled = false;
@@ -662,6 +680,7 @@
   $('writeDlgOk').addEventListener('click', async () => {
     if (!writeTarget) return;
     const variant = $('writeDlgVariant').value;
+    if (variant === 'tm01_cyfral' && !confirm('Заготовка будет финализирована как Cyfral — необратимо. Продолжить?')) return;
     const wait = $('writeDlgWait');
     dlgWriting = true;
     $('writeDlgOk').disabled = true;

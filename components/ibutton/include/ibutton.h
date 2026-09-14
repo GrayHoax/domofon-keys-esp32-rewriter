@@ -32,6 +32,7 @@ typedef enum {
     IBUTTON_WRITE_RW1990_V1 = 0, /**< RW1990.1: 0xD1 unlock, inverted data            */
     IBUTTON_WRITE_RW1990_V2,     /**< RW1990.2: 0x1D unlock, direct data              */
     IBUTTON_WRITE_TM01,          /**< TM01A/TM01C (Dallas mode): 0xC1 flag, 0xC5 ROM */
+    IBUTTON_WRITE_TM01_CYFRAL,   /**< TM01A/TM01C -> Cyfral key: 36-bit frame from a Cyfral container, then 0xCA finalisation (irreversible). */
     IBUTTON_WRITE_VARIANT_MAX,
 } ibutton_write_variant_t;
 
@@ -162,6 +163,11 @@ esp_err_t ibutton_verify(const ibutton_key_t *expected, ibutton_key_t *actual, i
 
 bool ibutton_key_crc_ok(const ibutton_key_t *key);
 void ibutton_key_fix_crc(ibutton_key_t *key);
+
+/** @brief Build the Dallas container ROM (valid CRC) for a Cyfral code. */
+void ibutton_key_from_cyfral(uint16_t code, ibutton_key_t *out);
+/** @brief Recognise a Cyfral container ROM (CRC not required). */
+bool ibutton_key_cyfral_code(const ibutton_key_t *key, uint16_t *code);
 bool ibutton_key_equal(const ibutton_key_t *a, const ibutton_key_t *b);
 
 /** @brief Format as 16 upper-case hex digits, bus order (family first). */

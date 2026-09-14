@@ -84,8 +84,15 @@ static void on_key_event(const ibutton_reader_state_t *state, void *ctx)
     }
     status_led_flash(STATUS_LED_FLASH_KEY_SEEN);
 
-    /* The database holds 1-Wire ROMs only; Cyfral/Metakom codes are just shown. */
-    if (state->active_proto != ACTIVEKEY_PROTO_NONE) {
+    /* The database holds 1-Wire ROMs; a Cyfral code is stored in its Dallas
+     * container so it can be written to RW1990 (archive) or TM01A (copy).
+     * Metakom and undecoded streams are only shown. */
+    ibutton_key_t container;
+    const ibutton_key_t *to_store = &state->key;
+    if (state->active_proto == ACTIVEKEY_PROTO_CYFRAL) {
+        ibutton_key_from_cyfral((uint16_t)state->active_code, &container);
+        to_store = &container;
+    } else if (state->active_proto != ACTIVEKEY_PROTO_NONE) {
         return;
     }
 
@@ -98,7 +105,7 @@ static void on_key_event(const ibutton_reader_state_t *state, void *ctx)
     }
 
     bool added = false;
-    esp_err_t err = keydb_add(&state->key, "", &added);
+    esp_err_t err = keydb_add(to_store, "", &added);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "key not saved: %s", esp_err_to_name(err));
     }

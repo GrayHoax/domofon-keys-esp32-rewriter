@@ -103,6 +103,12 @@ static cJSON *entry_to_json(const keydb_entry_t *e)
     cJSON_AddStringToObject(o, "id", id);
     cJSON_AddStringToObject(o, "name", e->name);
     cJSON_AddNumberToObject(o, "seq", e->seq);
+    uint16_t cyfral;
+    if (ibutton_key_cyfral_code(&e->key, &cyfral)) {
+        char code[ACTIVEKEY_CODE_STR_LEN];
+        activekey_code_to_str(ACTIVEKEY_PROTO_CYFRAL, cyfral, code);
+        cJSON_AddStringToObject(o, "cyfral", code);
+    }
     return o;
 }
 

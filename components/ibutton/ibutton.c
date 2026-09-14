@@ -27,7 +27,9 @@ static const char *TAG = "ibutton";
 /* TM01A/TM01C in Dallas mode (0xCA/0xCB would finalise as Cyfral/Metakom). */
 #define TM01_CMD_WRITE_FLAG    0xC1
 #define TM01_CMD_WRITE_ROM     0xC5
+#define TM01_CMD_FINAL_CYFRAL  0xCA
 #define TM01_FLAG_SETTLE_MS    5
+#define CYFRAL_FRAME_BITS      36
 
 #define BUS_MUTEX_TIMEOUT_MS 3000
 #define POLL_TASK_STACK      6144 /* Event callback may write to NVS; ADC decode buffers. */
@@ -67,6 +69,17 @@ void ibutton_key_fix_crc(ibutton_key_t *key)
 bool ibutton_key_equal(const ibutton_key_t *a, const ibutton_key_t *b)
 {
     return memcmp(a->rom, b->rom, IBUTTON_ROM_LEN) == 0;
+}
+
+void ibutton_key_from_cyfral(uint16_t code, ibutton_key_t *out)
+{
+    activekey_cyfral_pack(code, out->rom);
+    ibutton_key_fix_crc(out);
+}
+
+bool ibutton_key_cyfral_code(const ibutton_key_t *key, uint16_t *code)
+{
+    return activekey_cyfral_unpack(key->rom, code);
 }
 
 void ibutton_key_to_str(const ibutton_key_t *key, char out[IBUTTON_ROM_STR_LEN])
@@ -160,6 +173,8 @@ const char *ibutton_write_variant_str(ibutton_write_variant_t v)
         return "rw1990v2";
     case IBUTTON_WRITE_TM01:
         return "tm01";
+    case IBUTTON_WRITE_TM01_CYFRAL:
+        return "tm01_cyfral";
     default:
         return "unknown";
     }
@@ -273,6 +288,82 @@ static ibutton_write_result_t rw1990_program(const ibutton_key_t *key, ibutton_w
     vTaskDelay(pdMS_TO_TICKS(RW1990_PROG_PULSE_MS));
 
     return IBUTTON_WRITE_OK;
+}
+
+static uint8_t bit_reverse(uint8_t v)
+{
+    v = (uint8_t)(((v & 0xF0) >> 4) | ((v & 0x0F) << 4));
+    v = (uint8_t)(((v & 0xCC) >> 2) | ((v & 0x33) << 2));
+    v = (uint8_t)(((v & 0xAA) >> 1) | ((v & 0x55) << 1));
+    return v;
+}
+
+/**
+ * TM01A/TM01C -> Cyfral. The 36-bit frame is programmed with 0xC5 like a
+ * ROM but MSB-first and inverted, read back through 0x33 for verification
+ * (the blank hands it back inverted and bit-reversed per byte, still in
+ * Dallas mode), and only then finalised with 0xCA + "1" - after which the
+ * blank is a Cyfral key and never answers 1-Wire again. Sequence follows
+ * the Arduino-RFID-iButton-Duplicator project.
+ */
+static ibutton_write_result_t tm01_cyfral_program(const ibutton_key_t *key)
+{
+    ibutton_write_result_t result = IBUTTON_WRITE_OK;
+    const uint8_t *frame = key->rom; /* rom[0..4] hold the frame. */
+    uint8_t readback[IBUTTON_ROM_LEN];
+
+    onewire_set_timings(&s_ib.bus, &ONEWIRE_TIMINGS_TM01);
+
+    if (!onewire_reset(&s_ib.bus)) {
+        result = IBUTTON_WRITE_ERR_NO_DEVICE;
+        goto out;
+    }
+    onewire_write_byte(&s_ib.bus, TM01_CMD_WRITE_FLAG);
+    onewire_write_bit(&s_ib.bus, true);
+    vTaskDelay(pdMS_TO_TICKS(TM01_FLAG_SETTLE_MS));
+
+    if (!onewire_reset(&s_ib.bus)) {
+        result = IBUTTON_WRITE_ERR_NO_DEVICE;
+        goto out;
+    }
+    onewire_write_byte(&s_ib.bus, TM01_CMD_WRITE_ROM);
+    for (int i = 0; i < CYFRAL_FRAME_BITS; i++) {
+        bool bit = (frame[i / 8] >> (7 - (i % 8))) & 1;
+        onewire_write_bit(&s_ib.bus, !bit);
+        vTaskDelay(pdMS_TO_TICKS(RW1990_PROG_PULSE_MS));
+    }
+
+    /* Verify before the point of no return. */
+    vTaskDelay(pdMS_TO_TICKS(50));
+    if (!onewire_reset(&s_ib.bus)) {
+        result = IBUTTON_WRITE_ERR_NO_DEVICE;
+        goto out;
+    }
+    onewire_write_byte(&s_ib.bus, ONEWIRE_CMD_READ_ROM);
+    onewire_read_bytes(&s_ib.bus, readback, IBUTTON_ROM_LEN);
+    for (int i = 0; i < 5; i++) {
+        uint8_t expect = bit_reverse((uint8_t)~frame[i]);
+        uint8_t mask = (i == 4) ? 0x0F : 0xFF; /* Only 4 of the last byte's bits were written. */
+        if ((readback[i] & mask) != (expect & mask)) {
+            ESP_LOGE(TAG, "cyfral frame verify failed at byte %d: expected %02X, read %02X", i, expect,
+                     readback[i]);
+            result = IBUTTON_WRITE_ERR_VERIFY;
+            goto out;
+        }
+    }
+
+    /* Finalise as Cyfral. */
+    if (!onewire_reset(&s_ib.bus)) {
+        result = IBUTTON_WRITE_ERR_NO_DEVICE;
+        goto out;
+    }
+    onewire_write_byte(&s_ib.bus, TM01_CMD_FINAL_CYFRAL);
+    onewire_write_bit(&s_ib.bus, true);
+    vTaskDelay(pdMS_TO_TICKS(RW1990_PROG_PULSE_MS));
+
+out:
+    onewire_set_timings(&s_ib.bus, &ONEWIRE_TIMINGS_STANDARD);
+    return result;
 }
 
 /**
@@ -651,6 +742,9 @@ ibutton_write_result_t ibutton_write(const ibutton_key_t *key, ibutton_write_var
     if (!ibutton_key_crc_ok(key)) {
         return IBUTTON_WRITE_ERR_BAD_CRC;
     }
+    if (variant == IBUTTON_WRITE_TM01_CYFRAL && !ibutton_key_cyfral_code(key, NULL)) {
+        return IBUTTON_WRITE_ERR_INVALID_ARG; /* Not a Cyfral container. */
+    }
 
     char str[IBUTTON_ROM_STR_LEN];
     ibutton_key_to_str(key, str);
@@ -673,6 +767,11 @@ ibutton_write_result_t ibutton_write(const ibutton_key_t *key, ibutton_write_var
         goto out;
     }
 
+    if (variant == IBUTTON_WRITE_TM01_CYFRAL) {
+        /* Verified internally; once finalised the key no longer speaks 1-Wire. */
+        result = tm01_cyfral_program(key);
+        goto out;
+    }
     result = (variant == IBUTTON_WRITE_TM01) ? tm01_program(key) : rw1990_program(key, variant);
     if (result != IBUTTON_WRITE_OK) {
         goto out;
@@ -695,7 +794,9 @@ ibutton_write_result_t ibutton_write(const ibutton_key_t *key, ibutton_write_var
 out:
     xSemaphoreGive(s_ib.bus_mutex);
 
-    if (result == IBUTTON_WRITE_OK) {
+    if (result == IBUTTON_WRITE_OK && variant == IBUTTON_WRITE_TM01_CYFRAL) {
+        ESP_LOGI(TAG, "write ok, blank finalised as Cyfral (the poll task will pick up its stream)");
+    } else if (result == IBUTTON_WRITE_OK) {
         ESP_LOGI(TAG, "write ok");
         apply_read_result(ESP_OK, &readback);
     } else {

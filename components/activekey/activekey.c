@@ -468,6 +468,59 @@ esp_err_t activekey_read(activekey_result_t *out)
     return ESP_ERR_NOT_FOUND;
 }
 
+/* Cyfral nibble alphabet: exactly one zero per nibble carries two bits. */
+static const uint8_t CYFRAL_NIBBLE[4] = {0x7, 0xB, 0xD, 0xE};
+
+void activekey_cyfral_frame(uint16_t code, uint8_t frame[5])
+{
+    /* 36 bits: 0001 then nibble for each 2-bit pair, most significant first. */
+    uint64_t bits = 0x1;
+    for (int pair = 7; pair >= 0; pair--) {
+        bits = (bits << 4) | CYFRAL_NIBBLE[(code >> (pair * 2)) & 0x3];
+    }
+    bits <<= 4; /* Left-align to 40 bits. */
+    for (int i = 0; i < 5; i++) {
+        frame[i] = (uint8_t)(bits >> (8 * (4 - i)));
+    }
+}
+
+void activekey_cyfral_pack(uint16_t code, uint8_t rom[8])
+{
+    memset(rom, 0, 8);
+    activekey_cyfral_frame(code, rom);
+}
+
+bool activekey_cyfral_unpack(const uint8_t rom[8], uint16_t *code)
+{
+    if ((rom[0] >> 4) != 0x1 || (rom[4] & 0x0F) != 0 || rom[5] != 0 || rom[6] != 0) {
+        return false;
+    }
+    uint64_t bits = 0;
+    for (int i = 0; i < 5; i++) {
+        bits = (bits << 8) | rom[i];
+    }
+    bits >>= 4; /* Drop the padding nibble: now 36 bits, start nibble on top. */
+
+    uint16_t value = 0;
+    for (int pair = 7; pair >= 0; pair--) {
+        uint8_t nibble = (bits >> (pair * 4)) & 0xF;
+        int sym = -1;
+        for (int k = 0; k < 4; k++) {
+            if (CYFRAL_NIBBLE[k] == nibble) {
+                sym = k;
+            }
+        }
+        if (sym < 0) {
+            return false;
+        }
+        value = (uint16_t)((value << 2) | sym);
+    }
+    if (code) {
+        *code = value;
+    }
+    return true;
+}
+
 const char *activekey_proto_str(activekey_proto_t proto)
 {
     switch (proto) {

@@ -68,6 +68,22 @@ esp_err_t activekey_read(activekey_result_t *out);
 const char *activekey_proto_str(activekey_proto_t proto);
 void        activekey_code_to_str(activekey_proto_t proto, uint32_t code, char out[ACTIVEKEY_CODE_STR_LEN]);
 
+/**
+ * "Dallas container" for a Cyfral code, the convention duplicators use to
+ * keep a Cyfral key in an 8-byte 1-Wire ROM: the raw 36-bit frame (start
+ * nibble 0001 + eight one-hot nibbles) packed MSB-first into rom[0..4],
+ * rom[4] low nibble and rom[5..6] zero. rom[7] is left for the caller to
+ * fill with the CRC. Such a ROM can be written to RW1990 for safekeeping
+ * and turned into a working Cyfral key on a TM01A blank.
+ */
+void activekey_cyfral_pack(uint16_t code, uint8_t rom[8]);
+
+/** @return true and the code if @p rom is a well-formed Cyfral container. */
+bool activekey_cyfral_unpack(const uint8_t rom[8], uint16_t *code);
+
+/** Raw 36-bit frame for @p code, MSB-first in frame[0..4] (low nibble of frame[4] zero). */
+void activekey_cyfral_frame(uint16_t code, uint8_t frame[5]);
+
 #ifdef __cplusplus
 }
 #endif

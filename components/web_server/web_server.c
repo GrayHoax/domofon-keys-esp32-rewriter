@@ -139,10 +139,26 @@ static void add_reader_state(cJSON *obj, const ibutton_reader_state_t *st)
         activekey_code_to_str(st->active_proto, st->active_code, code);
         cJSON_AddNullToObject(obj, "id");
         cJSON_AddStringToObject(obj, "code", code);
+        if (st->active_proto == ACTIVEKEY_PROTO_CYFRAL) {
+            ibutton_key_t container;
+            ibutton_key_from_cyfral((uint16_t)st->active_code, &container);
+            ibutton_key_to_str(&container, id);
+            cJSON_AddStringToObject(obj, "container_id", id);
+            keydb_entry_t entry;
+            bool known = keydb_get(&container, &entry) == ESP_OK;
+            cJSON_AddBoolToObject(obj, "known", known);
+            cJSON_AddStringToObject(obj, "name", known ? entry.name : "");
+        }
     } else if (st->present) {
         ibutton_key_to_str(&st->key, id);
         cJSON_AddStringToObject(obj, "id", id);
         cJSON_AddNumberToObject(obj, "family", st->key.rom[0]);
+        uint16_t cyfral;
+        if (ibutton_key_cyfral_code(&st->key, &cyfral)) {
+            char code[ACTIVEKEY_CODE_STR_LEN];
+            activekey_code_to_str(ACTIVEKEY_PROTO_CYFRAL, cyfral, code);
+            cJSON_AddStringToObject(obj, "cyfral_code", code);
+        }
 
         keydb_entry_t entry;
         bool known = st->crc_ok && keydb_get(&st->key, &entry) == ESP_OK;
@@ -432,6 +448,10 @@ static esp_err_t h_key_write(httpd_req_t *req)
     }
     if (variant_err != ESP_OK) {
         return web_send_error(req, "400 Bad Request", "bad_variant", "Неизвестный тип заготовки");
+    }
+    if (variant == IBUTTON_WRITE_TM01_CYFRAL && !ibutton_key_cyfral_code(&key, NULL)) {
+        return web_send_error(req, "400 Bad Request", "not_cyfral",
+                              "Этот ID не является Cyfral-кодом в Dallas-контейнере");
     }
     if (!ibutton_key_crc_ok(&key)) {
         if (!fix_crc) {
