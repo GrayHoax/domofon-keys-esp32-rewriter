@@ -331,6 +331,17 @@
       el.textContent = 'Замыкание линии данных';
       el.className = 'keyid none bad';
       hint.textContent = 'Проверьте контакты считывателя.';
+    } else if (r.present && r.proto && r.proto !== 'dallas') {
+      const label = r.proto === 'cyfral' ? 'Cyfral' : 'Metakom';
+      el.textContent = label + ' ' + r.code;
+      el.className = 'keyid';
+      hint.textContent = 'Активный ключ ' + label + ' (или TM01A, финализированная под ' + label + '). Код показан в порядке приёма; в базу 1-Wire не сохраняется.';
+      const tag = r.proto + ':' + r.code;
+      if (state.lastKey !== tag) log('Прочитан ключ ' + label + ' ' + r.code, 'ok');
+      state.lastKey = tag;
+      $('keyDb').textContent = '';
+      $('btnUse').disabled = true;
+      return;
     } else if (r.present) {
       el.textContent = fmtId(r.id);
       el.className = 'keyid' + (r.crc_ok ? '' : ' bad');
@@ -369,7 +380,10 @@
     setBusy(true);
     try {
       const r = await post('/api/key/read');
-      if (r.ok) {
+      if (r.ok && r.proto && r.proto !== 'dallas') {
+        renderReader(r);
+        toast('Ключ прочитан', 'ok');
+      } else if (r.ok) {
         renderReader({ present: true, crc_ok: r.crc_ok, id: r.id, family: r.family });
         toast(r.crc_ok ? 'Ключ прочитан' : 'Прочитан с ошибкой CRC', r.crc_ok ? 'ok' : 'err');
       } else {

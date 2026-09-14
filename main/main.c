@@ -22,6 +22,7 @@
 #include "sdkconfig.h"
 
 #include "ibutton.h"
+#include "activekey.h"
 #include "keydb.h"
 #include "wifi_manager.h"
 #include "captive_dns.h"
@@ -82,6 +83,11 @@ static void on_key_event(const ibutton_reader_state_t *state, void *ctx)
     }
     status_led_flash(STATUS_LED_FLASH_KEY_SEEN);
 
+    /* The database holds 1-Wire ROMs only; Cyfral/Metakom codes are just shown. */
+    if (state->active_proto != ACTIVEKEY_PROTO_NONE) {
+        return;
+    }
+
     /* While a write is armed the key on the pad is a blank about to be
      * overwritten; its factory ID would only litter the database. */
     ibutton_write_job_t job;
@@ -137,6 +143,13 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_init());
     ESP_ERROR_CHECK(keydb_init());
     ESP_ERROR_CHECK(status_led_init());
+
+    /* The ADC driver floats its pin; init it before the 1-Wire driver so a
+     * shared data/sense pin ends up configured as open-drain. Optional. */
+    esp_err_t sense_err = activekey_init(CONFIG_RW_ANALOG_SENSE_GPIO);
+    if (sense_err != ESP_OK) {
+        ESP_LOGW(TAG, "Cyfral/Metakom sensing unavailable: %s", esp_err_to_name(sense_err));
+    }
 
     const ibutton_config_t reader_cfg = {
         .pin = CONFIG_RW_ONEWIRE_GPIO,

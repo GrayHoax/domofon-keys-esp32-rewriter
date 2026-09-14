@@ -14,6 +14,7 @@
 
 #include "driver/gpio.h"
 #include "esp_err.h"
+#include "activekey.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,6 +45,8 @@ typedef struct {
     bool crc_ok;        /**< ROM CRC of the last read matched.       */
     bool bus_shorted;   /**< Data line held low: contacts shorted.   */
     bool tm01_timing;   /**< Key answered only with TM01 slot timing. */
+    activekey_proto_t active_proto; /**< Cyfral/Metakom key on the pad (key/crc_ok not meaningful). */
+    uint32_t active_code;           /**< Its code, see activekey_code_to_str().                     */
     ibutton_key_t key;  /**< Last ROM read while present.            */
     int64_t updated_us; /**< esp_timer timestamp of the last change. */
 } ibutton_reader_state_t;
@@ -96,11 +99,18 @@ void      ibutton_set_job_callback(ibutton_job_cb_t cb, void *ctx);
 void ibutton_get_state(ibutton_reader_state_t *out);
 
 /**
- * @brief Read the ROM of the attached key immediately (bypasses poll interval).
+ * @brief Read the attached key immediately (bypasses poll interval).
  * @return ESP_OK on success, ESP_ERR_NOT_FOUND if no device, ESP_ERR_INVALID_CRC on CRC error,
- *         ESP_ERR_INVALID_STATE if the bus is shorted, ESP_ERR_TIMEOUT if bus is busy.
+ *         ESP_ERR_INVALID_STATE if the bus is shorted, ESP_ERR_TIMEOUT if bus is busy,
+ *         ESP_ERR_NOT_SUPPORTED when a Cyfral/Metakom key answered instead (see ibutton_get_state()).
  */
 esp_err_t ibutton_read(ibutton_key_t *out);
+
+/**
+ * @brief Run one Cyfral/Metakom capture with the bus locked; for diagnostics.
+ * @return activekey_read() codes, ESP_ERR_TIMEOUT if the bus is busy.
+ */
+esp_err_t ibutton_active_probe(activekey_result_t *out);
 
 /**
  * @brief Program @p key into an attached RW1990 blank and verify by reading it back.

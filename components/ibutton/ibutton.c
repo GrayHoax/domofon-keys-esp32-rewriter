@@ -30,7 +30,8 @@ static const char *TAG = "ibutton";
 #define TM01_FLAG_SETTLE_MS    5
 
 #define BUS_MUTEX_TIMEOUT_MS 3000
-#define POLL_TASK_STACK      4096 /* Event callback may write to NVS. */
+#define POLL_TASK_STACK      6144 /* Event callback may write to NVS; ADC decode buffers. */
+#define ACTIVE_SETTLE_MS     3    /* Let a line-powered key restart after our reset pulses. */
 #define POLL_TASK_PRIO       5
 #define JOB_PRESENT_POLLS    2    /* Polls a blank must survive before it is programmed. */
 
@@ -320,21 +321,27 @@ out:
 /* State handling                                                             */
 /* ------------------------------------------------------------------------- */
 
-static void state_update(bool present, bool crc_ok, bool shorted, const ibutton_key_t *key)
+static void state_update(bool present, bool crc_ok, bool shorted, const ibutton_key_t *key,
+                         const activekey_result_t *active)
 {
     bool changed = false;
-    bool tm01 = present && s_last_read_tm01;
+    bool tm01 = present && key != NULL && s_last_read_tm01;
+    activekey_proto_t proto = active ? active->proto : ACTIVEKEY_PROTO_NONE;
+    uint32_t code = active ? active->code : 0;
     ibutton_reader_state_t snapshot;
 
     xSemaphoreTake(s_ib.state_mutex, portMAX_DELAY);
     ibutton_reader_state_t *st = &s_ib.state;
 
     if (st->present != present || st->crc_ok != crc_ok || st->bus_shorted != shorted || st->tm01_timing != tm01 ||
+        st->active_proto != proto || st->active_code != code ||
         (present && key != NULL && !ibutton_key_equal(&st->key, key))) {
         st->present = present;
         st->crc_ok = crc_ok;
         st->bus_shorted = shorted;
         st->tm01_timing = tm01;
+        st->active_proto = proto;
+        st->active_code = code;
         if (present && key != NULL) {
             st->key = *key;
         }
@@ -345,7 +352,12 @@ static void state_update(bool present, bool crc_ok, bool shorted, const ibutton_
     xSemaphoreGive(s_ib.state_mutex);
 
     if (changed) {
-        if (present) {
+        if (present && proto != ACTIVEKEY_PROTO_NONE) {
+            char str[ACTIVEKEY_CODE_STR_LEN];
+            activekey_code_to_str(proto, code, str);
+            ESP_LOGI(TAG, "active key attached: %s %s (swing %u..%u, period %" PRIu32 " us)",
+                     activekey_proto_str(proto), str, active->adc_min, active->adc_max, active->period_us);
+        } else if (present) {
             char str[IBUTTON_ROM_STR_LEN];
             ibutton_key_to_str(&snapshot.key, str);
             ESP_LOGI(TAG, "key attached: %s (crc %s%s)", str, crc_ok ? "ok" : "BAD",
@@ -365,17 +377,45 @@ static void apply_read_result(esp_err_t err, const ibutton_key_t *key)
 {
     switch (err) {
     case ESP_OK:
-        state_update(true, true, false, key);
+        state_update(true, true, false, key, NULL);
         break;
     case ESP_ERR_INVALID_CRC:
-        state_update(true, false, false, key);
+        state_update(true, false, false, key, NULL);
         break;
     case ESP_ERR_INVALID_STATE:
-        state_update(false, false, true, NULL);
+        state_update(false, false, true, NULL, NULL);
         break;
     default:
-        state_update(false, false, false, NULL);
+        state_update(false, false, false, NULL, NULL);
         break;
+    }
+}
+
+/**
+ * Full probe of the pad (caller holds bus_mutex): 1-Wire first; when nothing
+ * answers - or the line is being toggled by something that is not a 1-Wire
+ * slave - listen for a Cyfral/Metakom stream.
+ * @return bus_read_rom() codes, or ESP_ERR_NOT_SUPPORTED with *active filled.
+ */
+static esp_err_t bus_probe(ibutton_key_t *key, activekey_result_t *active)
+{
+    active->proto = ACTIVEKEY_PROTO_NONE;
+    esp_err_t err = bus_read_rom(key);
+    if ((err == ESP_ERR_NOT_FOUND || err == ESP_ERR_INVALID_STATE) && activekey_available()) {
+        vTaskDelay(pdMS_TO_TICKS(ACTIVE_SETTLE_MS));
+        if (activekey_read(active) == ESP_OK) {
+            return ESP_ERR_NOT_SUPPORTED;
+        }
+    }
+    return err;
+}
+
+static void apply_probe_result(esp_err_t err, const ibutton_key_t *key, const activekey_result_t *active)
+{
+    if (err == ESP_ERR_NOT_SUPPORTED) {
+        state_update(true, true, false, NULL, active);
+    } else {
+        apply_read_result(err, key);
     }
 }
 
@@ -434,14 +474,15 @@ static void poll_task(void *arg)
 {
     (void)arg;
     ibutton_key_t key;
+    activekey_result_t active;
     int present_polls = 0;
 
     for (;;) {
         esp_err_t err = ESP_ERR_TIMEOUT; /* Bus held by someone else: treat as "nothing seen". */
         if (xSemaphoreTake(s_ib.bus_mutex, pdMS_TO_TICKS(s_ib.poll_interval_ms)) == pdTRUE) {
-            err = bus_read_rom(&key);
+            err = bus_probe(&key, &active);
             xSemaphoreGive(s_ib.bus_mutex);
-            apply_read_result(err, &key);
+            apply_probe_result(err, &key, &active);
         }
         /* A blank with a stale/bad CRC is still a blank worth programming. */
         present_polls = (err == ESP_OK || err == ESP_ERR_INVALID_CRC) ? present_polls + 1 : 0;
@@ -552,10 +593,23 @@ esp_err_t ibutton_read(ibutton_key_t *out)
     if (xSemaphoreTake(s_ib.bus_mutex, pdMS_TO_TICKS(BUS_MUTEX_TIMEOUT_MS)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
-    esp_err_t err = bus_read_rom(out);
+    activekey_result_t active;
+    esp_err_t err = bus_probe(out, &active);
     xSemaphoreGive(s_ib.bus_mutex);
 
-    apply_read_result(err, out);
+    apply_probe_result(err, out, &active);
+    return err;
+}
+
+esp_err_t ibutton_active_probe(activekey_result_t *out)
+{
+    ESP_RETURN_ON_FALSE(out != NULL, ESP_ERR_INVALID_ARG, TAG, "out is NULL");
+
+    if (xSemaphoreTake(s_ib.bus_mutex, pdMS_TO_TICKS(BUS_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err = activekey_read(out);
+    xSemaphoreGive(s_ib.bus_mutex);
     return err;
 }
 

@@ -15,6 +15,7 @@
 #include "sdkconfig.h"
 
 #include "ibutton.h"
+#include "activekey.h"
 #include "wifi_manager.h"
 #include "status_led.h"
 #include "keydb.h"
@@ -129,7 +130,15 @@ static void add_reader_state(cJSON *obj, const ibutton_reader_state_t *st)
     cJSON_AddBoolToObject(obj, "crc_ok", st->crc_ok);
     cJSON_AddBoolToObject(obj, "bus_shorted", st->bus_shorted);
     cJSON_AddBoolToObject(obj, "tm01_timing", st->tm01_timing);
-    if (st->present) {
+    cJSON_AddStringToObject(obj, "proto",
+                            st->present && st->active_proto != ACTIVEKEY_PROTO_NONE
+                                ? activekey_proto_str(st->active_proto) : "dallas");
+    if (st->present && st->active_proto != ACTIVEKEY_PROTO_NONE) {
+        char code[ACTIVEKEY_CODE_STR_LEN];
+        activekey_code_to_str(st->active_proto, st->active_code, code);
+        cJSON_AddNullToObject(obj, "id");
+        cJSON_AddStringToObject(obj, "code", code);
+    } else if (st->present) {
         ibutton_key_to_str(&st->key, id);
         cJSON_AddStringToObject(obj, "id", id);
         cJSON_AddNumberToObject(obj, "family", st->key.rom[0]);
@@ -247,6 +256,16 @@ static esp_err_t h_key_read(httpd_req_t *req)
         }
         return web_send_json(req, root, NULL);
     }
+    case ESP_ERR_NOT_SUPPORTED: {
+        /* A Cyfral/Metakom key answered: report it the way /api/key does. */
+        ibutton_reader_state_t st;
+        ibutton_get_state(&st);
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddTrueToObject(root, "ok");
+        add_reader_state(root, &st);
+        status_led_flash(STATUS_LED_FLASH_KEY_SEEN);
+        return web_send_json(req, root, NULL);
+    }
     case ESP_ERR_NOT_FOUND:
         return web_send_error(req, "404 Not Found", "no_device", "Ключ не обнаружен");
     case ESP_ERR_INVALID_STATE:
@@ -256,6 +275,36 @@ static esp_err_t h_key_read(httpd_req_t *req)
     default:
         return web_send_error(req, "500 Internal Server Error", "internal", esp_err_to_name(err));
     }
+}
+
+/** GET /api/key/analog - one raw Cyfral/Metakom capture, for bring-up on new hardware. */
+static esp_err_t h_key_analog(httpd_req_t *req)
+{
+    if (!activekey_available()) {
+        return web_send_error(req, "501 Not Implemented", "no_adc",
+                              "Аналоговый вход не настроен (RW_ANALOG_SENSE_GPIO)");
+    }
+    activekey_result_t r;
+    esp_err_t err = ibutton_active_probe(&r);
+    if (err == ESP_ERR_TIMEOUT) {
+        return web_send_error(req, "503 Service Unavailable", "busy", "Шина занята другой операцией");
+    }
+
+    char code[ACTIVEKEY_CODE_STR_LEN];
+    activekey_code_to_str(r.proto, r.code, code);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddTrueToObject(root, "ok");
+    cJSON_AddBoolToObject(root, "decoded", err == ESP_OK);
+    cJSON_AddStringToObject(root, "proto", activekey_proto_str(r.proto));
+    cJSON_AddStringToObject(root, "code", code);
+    cJSON *sig = cJSON_AddObjectToObject(root, "signal");
+    cJSON_AddNumberToObject(sig, "adc_min", r.adc_min);
+    cJSON_AddNumberToObject(sig, "adc_max", r.adc_max);
+    cJSON_AddNumberToObject(sig, "swing", r.adc_max - r.adc_min);
+    cJSON_AddNumberToObject(sig, "edges", r.edges);
+    cJSON_AddNumberToObject(sig, "period_us", r.period_us);
+    return web_send_json(req, root, NULL);
 }
 
 /** Human-readable outcome of a write plus the HTTP status it maps to. */
@@ -664,6 +713,7 @@ esp_err_t web_server_start(void)
         {.uri = "/api/status", .method = HTTP_GET, .handler = h_status},
         {.uri = "/api/key", .method = HTTP_GET, .handler = h_key_get},
         {.uri = "/api/key/read", .method = HTTP_POST, .handler = h_key_read},
+        {.uri = "/api/key/analog", .method = HTTP_GET, .handler = h_key_analog},
         {.uri = "/api/key/write", .method = HTTP_POST, .handler = h_key_write},
         {.uri = "/api/key/write", .method = HTTP_GET, .handler = h_key_write_status},
         {.uri = "/api/key/write", .method = HTTP_DELETE, .handler = h_key_write_cancel},
