@@ -55,7 +55,25 @@ typedef enum {
     IBUTTON_WRITE_ERR_BAD_CRC,     /**< Requested ROM has invalid CRC.           */
     IBUTTON_WRITE_ERR_BUSY,        /**< Bus busy (another operation running).    */
     IBUTTON_WRITE_ERR_INVALID_ARG,
+    IBUTTON_WRITE_ERR_TIMEOUT,     /**< Armed write: no blank presented in time. */
 } ibutton_write_result_t;
+
+/** Lifecycle of an armed ("wait for the blank") write. */
+typedef enum {
+    IBUTTON_JOB_IDLE = 0,
+    IBUTTON_JOB_WAITING, /**< Armed: the poll task is watching for a blank.       */
+    IBUTTON_JOB_WRITING, /**< A blank was seen; programming in progress (~1 s).    */
+    IBUTTON_JOB_DONE,    /**< Finished; `result` is valid until the next arm/cancel.*/
+} ibutton_job_state_t;
+
+typedef struct {
+    ibutton_job_state_t state;
+    uint32_t id;                     /**< Incremented on every arm, lets a client tell jobs apart. */
+    ibutton_key_t key;
+    ibutton_write_variant_t variant;
+    int64_t deadline_us;             /**< esp_timer time after which WAITING turns into a timeout. */
+    ibutton_write_result_t result;   /**< Valid in IBUTTON_JOB_DONE.                              */
+} ibutton_write_job_t;
 
 typedef struct {
     gpio_num_t pin;
@@ -65,8 +83,12 @@ typedef struct {
 /** Callback fired from the poll task when a key is attached or removed. */
 typedef void (*ibutton_event_cb_t)(const ibutton_reader_state_t *state, void *ctx);
 
+/** Callback fired from the poll task when an armed write finishes (any result). */
+typedef void (*ibutton_job_cb_t)(const ibutton_write_job_t *job, void *ctx);
+
 esp_err_t ibutton_init(const ibutton_config_t *cfg);
 void      ibutton_set_event_callback(ibutton_event_cb_t cb, void *ctx);
+void      ibutton_set_job_callback(ibutton_job_cb_t cb, void *ctx);
 
 /** @brief Copy the current reader snapshot. Thread-safe. */
 void ibutton_get_state(ibutton_reader_state_t *out);
@@ -84,6 +106,28 @@ esp_err_t ibutton_read(ibutton_key_t *out);
  * Blocks for ~1 s (64 programming pulses of 10 ms each plus overhead).
  */
 ibutton_write_result_t ibutton_write(const ibutton_key_t *key, ibutton_write_variant_t variant);
+
+/**
+ * @brief Arm a write: the poll task programs @p key into the next blank that
+ *        stays on the contacts for two consecutive polls, or gives up after
+ *        @p timeout_ms with IBUTTON_WRITE_ERR_TIMEOUT.
+ *
+ * Returns immediately; track progress with ibutton_write_job_get() or the
+ * job callback. Only one job exists at a time.
+ * @return ESP_ERR_INVALID_STATE if a job is already waiting or writing,
+ *         ESP_ERR_INVALID_ARG / ESP_ERR_INVALID_CRC for a bad request,
+ *         ESP_ERR_NOT_SUPPORTED when background polling is disabled.
+ */
+esp_err_t ibutton_write_arm(const ibutton_key_t *key, ibutton_write_variant_t variant, uint32_t timeout_ms);
+
+/**
+ * @brief Drop a waiting job or acknowledge a finished one.
+ * @return ESP_ERR_INVALID_STATE while programming is in progress (cannot be interrupted).
+ */
+esp_err_t ibutton_write_cancel(void);
+
+/** @brief Copy the current job snapshot. Thread-safe. */
+void ibutton_write_job_get(ibutton_write_job_t *out);
 
 /**
  * @brief Check that the attached key answers correctly and carries @p expected.

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <strings.h>
 #include <ctype.h>
+#include <inttypes.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -26,6 +27,7 @@ static const char *TAG = "ibutton";
 #define BUS_MUTEX_TIMEOUT_MS 3000
 #define POLL_TASK_STACK      4096 /* Event callback may write to NVS. */
 #define POLL_TASK_PRIO       5
+#define JOB_PRESENT_POLLS    2    /* Polls a blank must survive before it is programmed. */
 
 static struct {
     onewire_bus_t bus;
@@ -34,6 +36,9 @@ static struct {
     ibutton_reader_state_t state;
     ibutton_event_cb_t cb;
     void *cb_ctx;
+    ibutton_job_cb_t job_cb;
+    void *job_cb_ctx;
+    ibutton_write_job_t job; /* Guarded by state_mutex. */
     uint32_t poll_interval_ms;
     TaskHandle_t poll_task;
 } s_ib;
@@ -132,6 +137,8 @@ const char *ibutton_write_result_str(ibutton_write_result_t r)
         return "busy";
     case IBUTTON_WRITE_ERR_INVALID_ARG:
         return "invalid_arg";
+    case IBUTTON_WRITE_ERR_TIMEOUT:
+        return "timeout";
     default:
         return "unknown";
     }
@@ -297,17 +304,73 @@ static void apply_read_result(esp_err_t err, const ibutton_key_t *key)
     }
 }
 
+/* ------------------------------------------------------------------------- */
+/* Armed write job (driven by the poll task)                                  */
+/* ------------------------------------------------------------------------- */
+
+static void job_finish(ibutton_write_result_t result)
+{
+    ibutton_write_job_t snapshot;
+
+    xSemaphoreTake(s_ib.state_mutex, portMAX_DELAY);
+    s_ib.job.state = IBUTTON_JOB_DONE;
+    s_ib.job.result = result;
+    snapshot = s_ib.job;
+    xSemaphoreGive(s_ib.state_mutex);
+
+    ESP_LOGI(TAG, "armed write #%" PRIu32 " finished: %s", snapshot.id, ibutton_write_result_str(result));
+    if (s_ib.job_cb) {
+        s_ib.job_cb(&snapshot, s_ib.job_cb_ctx);
+    }
+}
+
+/**
+ * Called once per poll with the number of consecutive polls a device has
+ * been present. Programs the blank as soon as it has settled on the pad.
+ */
+static void job_service(int present_polls)
+{
+    ibutton_key_t key;
+    ibutton_write_variant_t variant;
+
+    xSemaphoreTake(s_ib.state_mutex, portMAX_DELAY);
+    if (s_ib.job.state != IBUTTON_JOB_WAITING) {
+        xSemaphoreGive(s_ib.state_mutex);
+        return;
+    }
+    if (esp_timer_get_time() >= s_ib.job.deadline_us) {
+        xSemaphoreGive(s_ib.state_mutex);
+        job_finish(IBUTTON_WRITE_ERR_TIMEOUT);
+        return;
+    }
+    if (present_polls < JOB_PRESENT_POLLS) {
+        xSemaphoreGive(s_ib.state_mutex);
+        return;
+    }
+    s_ib.job.state = IBUTTON_JOB_WRITING;
+    key = s_ib.job.key;
+    variant = s_ib.job.variant;
+    xSemaphoreGive(s_ib.state_mutex);
+
+    job_finish(ibutton_write(&key, variant));
+}
+
 static void poll_task(void *arg)
 {
     (void)arg;
     ibutton_key_t key;
+    int present_polls = 0;
 
     for (;;) {
+        esp_err_t err = ESP_ERR_TIMEOUT; /* Bus held by someone else: treat as "nothing seen". */
         if (xSemaphoreTake(s_ib.bus_mutex, pdMS_TO_TICKS(s_ib.poll_interval_ms)) == pdTRUE) {
-            esp_err_t err = bus_read_rom(&key);
+            err = bus_read_rom(&key);
             xSemaphoreGive(s_ib.bus_mutex);
             apply_read_result(err, &key);
         }
+        /* A blank with a stale/bad CRC is still a blank worth programming. */
+        present_polls = (err == ESP_OK || err == ESP_ERR_INVALID_CRC) ? present_polls + 1 : 0;
+        job_service(present_polls);
         vTaskDelay(pdMS_TO_TICKS(s_ib.poll_interval_ms));
     }
 }
@@ -340,6 +403,64 @@ void ibutton_set_event_callback(ibutton_event_cb_t cb, void *ctx)
 {
     s_ib.cb = cb;
     s_ib.cb_ctx = ctx;
+}
+
+void ibutton_set_job_callback(ibutton_job_cb_t cb, void *ctx)
+{
+    s_ib.job_cb = cb;
+    s_ib.job_cb_ctx = ctx;
+}
+
+esp_err_t ibutton_write_arm(const ibutton_key_t *key, ibutton_write_variant_t variant, uint32_t timeout_ms)
+{
+    ESP_RETURN_ON_FALSE(key != NULL && variant < IBUTTON_WRITE_VARIANT_MAX && timeout_ms > 0, ESP_ERR_INVALID_ARG,
+                        TAG, "bad args");
+    ESP_RETURN_ON_FALSE(ibutton_key_crc_ok(key), ESP_ERR_INVALID_CRC, TAG, "bad crc");
+    ESP_RETURN_ON_FALSE(s_ib.poll_task != NULL, ESP_ERR_NOT_SUPPORTED, TAG, "polling disabled");
+
+    xSemaphoreTake(s_ib.state_mutex, portMAX_DELAY);
+    if (s_ib.job.state == IBUTTON_JOB_WAITING || s_ib.job.state == IBUTTON_JOB_WRITING) {
+        xSemaphoreGive(s_ib.state_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_ib.job.id++;
+    s_ib.job.state = IBUTTON_JOB_WAITING;
+    s_ib.job.key = *key;
+    s_ib.job.variant = variant;
+    s_ib.job.deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    s_ib.job.result = IBUTTON_WRITE_OK;
+    uint32_t id = s_ib.job.id;
+    xSemaphoreGive(s_ib.state_mutex);
+
+    char str[IBUTTON_ROM_STR_LEN];
+    ibutton_key_to_str(key, str);
+    ESP_LOGI(TAG, "armed write #%" PRIu32 ": %s as %s, waiting up to %" PRIu32 " ms", id, str,
+             ibutton_write_variant_str(variant), timeout_ms);
+    return ESP_OK;
+}
+
+esp_err_t ibutton_write_cancel(void)
+{
+    xSemaphoreTake(s_ib.state_mutex, portMAX_DELAY);
+    if (s_ib.job.state == IBUTTON_JOB_WRITING) {
+        xSemaphoreGive(s_ib.state_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+    bool was_waiting = (s_ib.job.state == IBUTTON_JOB_WAITING);
+    s_ib.job.state = IBUTTON_JOB_IDLE;
+    xSemaphoreGive(s_ib.state_mutex);
+
+    if (was_waiting) {
+        ESP_LOGI(TAG, "armed write cancelled");
+    }
+    return ESP_OK;
+}
+
+void ibutton_write_job_get(ibutton_write_job_t *out)
+{
+    xSemaphoreTake(s_ib.state_mutex, portMAX_DELAY);
+    *out = s_ib.job;
+    xSemaphoreGive(s_ib.state_mutex);
 }
 
 void ibutton_get_state(ibutton_reader_state_t *out)

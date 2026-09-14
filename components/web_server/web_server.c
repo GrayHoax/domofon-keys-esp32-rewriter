@@ -26,6 +26,8 @@ static const char *TAG = "web";
 #define VERIFY_DEFAULT_N   5
 #define VERIFY_MAX_N       50
 #define REBOOT_DELAY_MS    500
+#define WRITE_WAIT_DEFAULT_S 30 /* How long an armed write waits for a blank. */
+#define WRITE_WAIT_MAX_S     120
 
 extern const char index_html_start[] asm("_binary_index_html_start");
 extern const char index_html_end[] asm("_binary_index_html_end");
@@ -255,6 +257,105 @@ static esp_err_t h_key_read(httpd_req_t *req)
     }
 }
 
+/** Human-readable outcome of a write plus the HTTP status it maps to. */
+static const char *write_result_message(ibutton_write_result_t res, const char **status)
+{
+    switch (res) {
+    case IBUTTON_WRITE_OK:
+        *status = "200 OK";
+        return "Ключ записан и проверен";
+    case IBUTTON_WRITE_ERR_NO_DEVICE:
+        *status = "404 Not Found";
+        return "Заготовка не обнаружена или потерян контакт во время записи";
+    case IBUTTON_WRITE_ERR_BUS_SHORTED:
+        *status = "409 Conflict";
+        return "Линия данных замкнута";
+    case IBUTTON_WRITE_ERR_VERIFY:
+        *status = "422 Unprocessable Entity";
+        return "Проверка после записи не прошла: попробуйте другой тип заготовки";
+    case IBUTTON_WRITE_ERR_BUSY:
+        *status = "503 Service Unavailable";
+        return "Шина занята другой операцией";
+    case IBUTTON_WRITE_ERR_TIMEOUT:
+        *status = "408 Request Timeout";
+        return "Заготовка не приложена за отведённое время";
+    default:
+        *status = "500 Internal Server Error";
+        return "Ошибка записи";
+    }
+}
+
+static const char *job_state_str(ibutton_job_state_t st)
+{
+    switch (st) {
+    case IBUTTON_JOB_WAITING:
+        return "waiting";
+    case IBUTTON_JOB_WRITING:
+        return "writing";
+    case IBUTTON_JOB_DONE:
+        return "done";
+    default:
+        return "idle";
+    }
+}
+
+static cJSON *job_to_json(const ibutton_write_job_t *job)
+{
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddStringToObject(j, "state", job_state_str(job->state));
+    if (job->state == IBUTTON_JOB_IDLE) {
+        return j;
+    }
+
+    char id[IBUTTON_ROM_STR_LEN];
+    ibutton_key_to_str(&job->key, id);
+    cJSON_AddNumberToObject(j, "job_id", job->id);
+    cJSON_AddStringToObject(j, "id", id);
+    cJSON_AddStringToObject(j, "variant", ibutton_write_variant_str(job->variant));
+
+    if (job->state == IBUTTON_JOB_WAITING) {
+        int64_t left_us = job->deadline_us - esp_timer_get_time();
+        cJSON_AddNumberToObject(j, "remaining_s", left_us > 0 ? (double)(left_us + 999999) / 1000000.0 : 0);
+    }
+    if (job->state == IBUTTON_JOB_DONE) {
+        const char *status;
+        cJSON_AddBoolToObject(j, "ok", job->result == IBUTTON_WRITE_OK);
+        cJSON_AddStringToObject(j, "result", ibutton_write_result_str(job->result));
+        cJSON_AddStringToObject(j, "message", write_result_message(job->result, &status));
+    }
+    return j;
+}
+
+/** GET /api/key/write — progress of the armed write, if any. */
+static esp_err_t h_key_write_status(httpd_req_t *req)
+{
+    ibutton_write_job_t job;
+    ibutton_write_job_get(&job);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddTrueToObject(root, "ok");
+    cJSON_AddItemToObject(root, "job", job_to_json(&job));
+    return web_send_json(req, root, NULL);
+}
+
+/** DELETE /api/key/write — stop waiting for a blank. */
+static esp_err_t h_key_write_cancel(httpd_req_t *req)
+{
+    esp_err_t err = ibutton_write_cancel();
+    if (err == ESP_ERR_INVALID_STATE) {
+        return web_send_error(req, "409 Conflict", "writing", "Идёт запись, дождитесь окончания");
+    }
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddTrueToObject(root, "ok");
+    return web_send_json(req, root, NULL);
+}
+
+/**
+ * POST /api/key/write — {id, variant, fix_crc, wait, timeout_s}.
+ * With "wait": true the device arms the write and answers at once; the
+ * blank is programmed when it is placed on the pad (poll GET to follow).
+ * Without it the write happens immediately against whatever is attached.
+ */
 static esp_err_t h_key_write(httpd_req_t *req)
 {
     cJSON *body = web_read_json_body(req);
@@ -269,6 +370,8 @@ static esp_err_t h_key_write(httpd_req_t *req)
     esp_err_t err = ibutton_key_from_str(web_json_string(body, "id", ""), &key);
     esp_err_t variant_err = ibutton_write_variant_from_str(web_json_string(body, "variant", "rw1990v1"), &variant);
     bool fix_crc = web_json_bool(body, "fix_crc", false);
+    bool wait = web_json_bool(body, "wait", false);
+    int timeout_s = web_json_int(body, "timeout_s", WRITE_WAIT_DEFAULT_S);
     cJSON_Delete(body);
 
     if (err != ESP_OK) {
@@ -285,47 +388,43 @@ static esp_err_t h_key_write(httpd_req_t *req)
         ibutton_key_fix_crc(&key);
     }
 
-    ibutton_write_result_t res = ibutton_write(&key, variant);
     char id[IBUTTON_ROM_STR_LEN];
     ibutton_key_to_str(&key, id);
+
+    if (wait) {
+        if (timeout_s < 1 || timeout_s > WRITE_WAIT_MAX_S) {
+            timeout_s = WRITE_WAIT_DEFAULT_S;
+        }
+        err = ibutton_write_arm(&key, variant, (uint32_t)timeout_s * 1000);
+        if (err == ESP_ERR_INVALID_STATE) {
+            return web_send_error(req, "409 Conflict", "busy", "Уже ожидается запись другого ключа");
+        }
+        if (err != ESP_OK) {
+            return web_send_error(req, "500 Internal Server Error", "internal", esp_err_to_name(err));
+        }
+        ibutton_write_job_t job;
+        ibutton_write_job_get(&job);
+
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddTrueToObject(root, "ok");
+        cJSON_AddTrueToObject(root, "armed");
+        cJSON_AddStringToObject(root, "id", id);
+        cJSON_AddItemToObject(root, "job", job_to_json(&job));
+        return web_send_json(req, root, "202 Accepted");
+    }
+
+    ibutton_write_result_t res = ibutton_write(&key, variant);
+    const char *status;
+    const char *message = write_result_message(res, &status);
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", res == IBUTTON_WRITE_OK);
     cJSON_AddStringToObject(root, "result", ibutton_write_result_str(res));
     cJSON_AddStringToObject(root, "id", id);
     cJSON_AddStringToObject(root, "variant", ibutton_write_variant_str(variant));
+    cJSON_AddStringToObject(root, "message", message);
 
-    const char *status = "200 OK";
-    switch (res) {
-    case IBUTTON_WRITE_OK:
-        cJSON_AddStringToObject(root, "message", "Ключ записан и проверен");
-        status_led_flash(STATUS_LED_FLASH_SUCCESS);
-        break;
-    case IBUTTON_WRITE_ERR_NO_DEVICE:
-        cJSON_AddStringToObject(root, "message", "Заготовка не обнаружена или потерян контакт во время записи");
-        status = "404 Not Found";
-        break;
-    case IBUTTON_WRITE_ERR_BUS_SHORTED:
-        cJSON_AddStringToObject(root, "message", "Линия данных замкнута");
-        status = "409 Conflict";
-        break;
-    case IBUTTON_WRITE_ERR_VERIFY:
-        cJSON_AddStringToObject(root, "message",
-                                "Проверка после записи не прошла: попробуйте другой тип заготовки");
-        status = "422 Unprocessable Entity";
-        break;
-    case IBUTTON_WRITE_ERR_BUSY:
-        cJSON_AddStringToObject(root, "message", "Шина занята другой операцией");
-        status = "503 Service Unavailable";
-        break;
-    default:
-        cJSON_AddStringToObject(root, "message", "Ошибка записи");
-        status = "500 Internal Server Error";
-        break;
-    }
-    if (res != IBUTTON_WRITE_OK) {
-        status_led_flash(STATUS_LED_FLASH_ERROR);
-    }
+    status_led_flash(res == IBUTTON_WRITE_OK ? STATUS_LED_FLASH_SUCCESS : STATUS_LED_FLASH_ERROR);
     return web_send_json(req, root, status);
 }
 
@@ -565,6 +664,8 @@ esp_err_t web_server_start(void)
         {.uri = "/api/key", .method = HTTP_GET, .handler = h_key_get},
         {.uri = "/api/key/read", .method = HTTP_POST, .handler = h_key_read},
         {.uri = "/api/key/write", .method = HTTP_POST, .handler = h_key_write},
+        {.uri = "/api/key/write", .method = HTTP_GET, .handler = h_key_write_status},
+        {.uri = "/api/key/write", .method = HTTP_DELETE, .handler = h_key_write_cancel},
         {.uri = "/api/key/verify", .method = HTTP_POST, .handler = h_key_verify},
         {.uri = "/api/wifi/scan", .method = HTTP_GET, .handler = h_wifi_scan},
         {.uri = "/api/wifi/sta", .method = HTTP_POST, .handler = h_wifi_sta_post},

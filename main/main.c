@@ -82,10 +82,36 @@ static void on_key_event(const ibutton_reader_state_t *state, void *ctx)
     }
     status_led_flash(STATUS_LED_FLASH_KEY_SEEN);
 
+    /* While a write is armed the key on the pad is a blank about to be
+     * overwritten; its factory ID would only litter the database. */
+    ibutton_write_job_t job;
+    ibutton_write_job_get(&job);
+    if (job.state == IBUTTON_JOB_WAITING || job.state == IBUTTON_JOB_WRITING) {
+        return;
+    }
+
     bool added = false;
     esp_err_t err = keydb_add(&state->key, "", &added);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "key not saved: %s", esp_err_to_name(err));
+    }
+}
+
+/** Outcome of an armed write, mirrored on the LED like a direct one. */
+static void on_write_job_done(const ibutton_write_job_t *job, void *ctx)
+{
+    (void)ctx;
+    if (job->result == IBUTTON_WRITE_OK) {
+        status_led_flash(STATUS_LED_FLASH_SUCCESS);
+        /* The read-back happened while the job was still "writing" and was
+         * therefore skipped by on_key_event(); record the new key now. */
+        bool added = false;
+        esp_err_t err = keydb_add(&job->key, "", &added);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "written key not saved: %s", esp_err_to_name(err));
+        }
+    } else if (job->result != IBUTTON_WRITE_ERR_TIMEOUT) {
+        status_led_flash(STATUS_LED_FLASH_ERROR);
     }
 }
 
@@ -118,6 +144,7 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(ibutton_init(&reader_cfg));
     ibutton_set_event_callback(on_key_event, NULL);
+    ibutton_set_job_callback(on_write_job_done, NULL);
 
     /* The default event loop is created inside wifi_manager_init(); register
      * our handler first so the initial AP_STARTED event is not missed. */

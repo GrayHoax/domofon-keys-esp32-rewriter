@@ -64,6 +64,15 @@
   .tablewrap { overflow-x: auto; }
   .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .toolbar input[type=text] { flex: 1 1 200px; }
+  .wait { display: flex; align-items: center; gap: 12px; margin-top: 12px; padding: 12px 14px; border-radius: 10px;
+          background: var(--card2); border: 1px solid var(--warn); color: var(--warn); font-weight: 600; }
+  .wait::before { content: ''; width: 12px; height: 12px; border-radius: 50%; background: var(--warn); flex: none;
+                  animation: pulse 1s ease-in-out infinite; }
+  .wait.writing { border-color: var(--accent); color: var(--accent); }
+  .wait.writing::before { background: var(--accent); animation-duration: 0.4s; }
+  .wait span { flex: 1 1 auto; }
+  .wait .btn { flex: none; padding: 6px 12px; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
   .badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--card2); color: var(--muted); margin-left: 8px; vertical-align: middle; }
   dialog { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 18px; max-width: 420px; width: 90vw; }
   dialog::backdrop { background: rgba(0,0,0,.6); }
@@ -114,7 +123,8 @@
         <button class="btn primary" id="btnWrite">Записать</button>
         <button class="btn" id="btnVerify">Проверить ключ</button>
       </div>
-      <div class="hint">Запись занимает около секунды. Не отрывайте ключ от контактов до окончания операции.</div>
+      <div id="writeWait" class="wait" hidden><span id="writeWaitText"></span><button class="btn" id="btnWriteCancel">Отмена</button></div>
+      <div class="hint">После нажатия «Записать» приложите заготовку к контактам — запись начнётся сама. Занимает около секунды; не отрывайте ключ до окончания.</div>
     </div>
 
     <div class="card">
@@ -231,11 +241,12 @@
     <option value="rw1990v1">RW1990.1 (0xD1, инверсные данные)</option>
     <option value="rw1990v2">RW1990.2 (0x1D, прямые данные)</option>
   </select>
-  <div class="hint">Приложите заготовку к считывателю и не отрывайте до конца записи (~1 с).</div>
+  <div class="hint">Нажмите «Записать», затем приложите заготовку к контактам и не отрывайте до конца записи (~1 с).</div>
   <div class="row">
     <button class="btn primary" id="writeDlgOk">Записать</button>
     <button class="btn" id="writeDlgCancel">Отмена</button>
   </div>
+  <div id="writeDlgWait" class="wait" hidden><span id="writeDlgWaitText"></span></div>
   <div id="writeDlgResult" class="hint"></div>
 </dialog>
 
@@ -293,8 +304,10 @@
     return crc;
   }
 
-  function setBusy(b) {
-    state.busy = b;
+  /* pollOk keeps the reader panel live (armed write: the operator wants to
+   * see the blank being detected) while the buttons stay disabled. */
+  function setBusy(b, pollOk) {
+    state.busy = b && !pollOk;
     ['btnRead', 'btnWrite', 'btnVerify'].forEach((id) => ($(id).disabled = b));
   }
 
@@ -390,27 +403,86 @@
   });
   $('fixCrc').addEventListener('change', validateWriteId);
 
-  $('btnWrite').addEventListener('click', async () => {
-    const id = validateWriteId();
-    if (!id) { toast('Введите корректный ID ключа', 'err'); return; }
-    const variant = $('variant').value;
-    if (!confirm('Записать ' + fmtId(id) + ' в заготовку ' + $('variant').selectedOptions[0].text.split(' ')[0] + '?')) return;
-    setBusy(true);
-    log('Запись ' + fmtId(id) + ' (' + variant + ')…');
+  /* Arm a write on the device and follow it until the blank is programmed.
+   * onProgress(job) is called on every poll; resolves with the final job
+   * ({ok, result, message}) or a synthetic one when the request failed. */
+  const WRITE_WAIT_S = 30;
+  async function armedWrite(id, variant, fixCrc, onProgress) {
+    const r = await post('/api/key/write', { id, variant, fix_crc: fixCrc, wait: true, timeout_s: WRITE_WAIT_S });
+    if (!r.ok) return { ok: false, result: r.error, message: r.message, id };
+    onProgress(r.job);
+    return followWrite(r.job.job_id, id, onProgress);
+  }
+  async function followWrite(jobId, id, onProgress) {
+    for (;;) {
+      await new Promise((res) => setTimeout(res, 400));
+      let s;
+      try { s = await api('/api/key/write'); } catch (e) { continue; }
+      const job = s.job || {};
+      if (job.state === 'idle' || (job.job_id && job.job_id !== jobId)) {
+        return { ok: false, result: 'cancelled', message: 'Запись отменена', id };
+      }
+      onProgress(job);
+      if (job.state === 'done') {
+        api('/api/key/write', { method: 'DELETE' }).catch(() => {});
+        return job;
+      }
+    }
+  }
+  const cancelWrite = () => api('/api/key/write', { method: 'DELETE' }).catch(() => {});
+
+  function waitText(job) {
+    if (job.state === 'writing') return 'Идёт запись, не отрывайте ключ…';
+    const left = Math.ceil(job.remaining_s || 0);
+    return 'Приложите заготовку к контактам… ' + left + ' с';
+  }
+
+  /* Runs an armed write from the main tab; `start` either arms a new job or
+   * attaches to one already running on the device (page reload mid-wait). */
+  async function mainTabWrite(id, start) {
+    setBusy(true, true);
+    const wait = $('writeWait');
+    wait.hidden = false;
     try {
-      const r = await post('/api/key/write', { id, variant, fix_crc: $('fixCrc').checked });
+      const r = await start((job) => {
+        wait.classList.toggle('writing', job.state === 'writing');
+        $('btnWriteCancel').disabled = job.state !== 'waiting';
+        $('writeWaitText').textContent = waitText(job);
+      });
       if (r.ok) {
         log('Записано и проверено: ' + fmtId(r.id), 'ok');
         toast('Ключ записан', 'ok');
         if (r.id !== id) $('writeId').value = fmtId(r.id), validateWriteId();
       } else {
-        log('Ошибка записи: ' + r.message + ' [' + (r.result || r.error) + ']', 'err');
-        toast(r.message, 'err');
+        const kind = r.result === 'cancelled' || r.result === 'timeout' ? 'warn' : 'err';
+        log((kind === 'warn' ? '' : 'Ошибка записи: ') + r.message + ' [' + r.result + ']', kind);
+        toast(r.message, kind === 'warn' ? '' : 'err');
       }
     } catch (e) {
       log('Нет связи с устройством', 'err');
-    } finally { setBusy(false); }
+    } finally { wait.hidden = true; wait.classList.remove('writing'); setBusy(false); }
+  }
+
+  $('btnWrite').addEventListener('click', () => {
+    const id = validateWriteId();
+    if (!id) { toast('Введите корректный ID ключа', 'err'); return; }
+    const variant = $('variant').value;
+    if (!confirm('Записать ' + fmtId(id) + ' в заготовку ' + $('variant').selectedOptions[0].text.split(' ')[0] + '?')) return;
+    log('Ожидание заготовки для записи ' + fmtId(id) + ' (' + variant + ')…');
+    mainTabWrite(id, (onProgress) => armedWrite(id, variant, $('fixCrc').checked, onProgress));
   });
+  $('btnWriteCancel').addEventListener('click', cancelWrite);
+
+  /* A job armed before a page reload keeps running on the device: pick it up. */
+  async function resumeWrite() {
+    let s;
+    try { s = await api('/api/key/write'); } catch (e) { return; }
+    const job = s.job || {};
+    if (job.state !== 'waiting' && job.state !== 'writing') return;
+    if (!$('writeId').value) { $('writeId').value = fmtId(job.id); validateWriteId(); }
+    log('Продолжается ожидание заготовки для записи ' + fmtId(job.id) + '…');
+    mainTabWrite(job.id, (onProgress) => { onProgress(job); return followWrite(job.job_id, job.id, onProgress); });
+  }
 
   /* ---------- verify ---------- */
   $('btnVerify').addEventListener('click', async () => {
@@ -557,24 +629,40 @@
     $('writeDlgOk').disabled = false;
     $('writeDlg').showModal();
   }
-  $('writeDlgCancel').addEventListener('click', () => $('writeDlg').close());
+  let dlgWriting = false;
+  $('writeDlgCancel').addEventListener('click', () => {
+    if (dlgWriting) cancelWrite(); else $('writeDlg').close();
+  });
+  $('writeDlg').addEventListener('cancel', (e) => { if (dlgWriting) { e.preventDefault(); cancelWrite(); } });
   $('writeDlgOk').addEventListener('click', async () => {
     if (!writeTarget) return;
     const variant = $('writeDlgVariant').value;
+    const wait = $('writeDlgWait');
+    dlgWriting = true;
     $('writeDlgOk').disabled = true;
     $('writeDlgResult').style.color = '';
-    $('writeDlgResult').textContent = 'Запись…';
-    log('Запись ' + fmtId(writeTarget.id) + ' из базы (' + variant + ')…');
+    $('writeDlgResult').textContent = '';
+    wait.hidden = false;
+    log('Ожидание заготовки для записи ' + fmtId(writeTarget.id) + ' из базы (' + variant + ')…');
     try {
-      const r = await post('/api/key/write', { id: writeTarget.id, variant, fix_crc: false });
+      const r = await armedWrite(writeTarget.id, variant, false, (job) => {
+        wait.classList.toggle('writing', job.state === 'writing');
+        $('writeDlgCancel').disabled = job.state === 'writing';
+        $('writeDlgWaitText').textContent = waitText(job);
+      });
+      const soft = r.result === 'cancelled' || r.result === 'timeout';
       $('writeDlgResult').textContent = r.message;
-      $('writeDlgResult').style.color = r.ok ? 'var(--ok)' : 'var(--err)';
-      log((r.ok ? 'Записано и проверено: ' + fmtId(r.id) : 'Ошибка записи: ' + r.message), r.ok ? 'ok' : 'err');
-      toast(r.message, r.ok ? 'ok' : 'err');
+      $('writeDlgResult').style.color = r.ok ? 'var(--ok)' : (soft ? 'var(--warn)' : 'var(--err)');
+      log((r.ok ? 'Записано и проверено: ' + fmtId(r.id) : (soft ? '' : 'Ошибка записи: ') + r.message), r.ok ? 'ok' : (soft ? 'warn' : 'err'));
+      toast(r.message, r.ok ? 'ok' : (soft ? '' : 'err'));
       if (r.ok) setTimeout(() => $('writeDlg').close(), 1200);
     } catch (e) {
       $('writeDlgResult').textContent = 'Нет связи с устройством';
-    } finally { $('writeDlgOk').disabled = false; }
+    } finally {
+      dlgWriting = false;
+      wait.hidden = true; wait.classList.remove('writing');
+      $('writeDlgOk').disabled = false; $('writeDlgCancel').disabled = false;
+    }
   });
 
   /* ---------- network ---------- */
@@ -670,6 +758,7 @@
 
   /* ---------- start ---------- */
   refreshStatus();
+  resumeWrite();
   pollReader();
   setInterval(pollReader, 700);
   setInterval(refreshStatus, 10000);
