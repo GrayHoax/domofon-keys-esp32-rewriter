@@ -11,8 +11,8 @@ menu "RW1990 Programmer"
                 GPIO connected to the iButton contact pad. Requires an external
                 2.2k..4.7k pull-up to 3.3 V. Avoid strapping pins (ESP32-C3:
                 GPIO2/8/9, ESP32-C6: GPIO4/5/8/9/15) and UART0 pins. On the
-                ESP-C3-12F-Kit IO1 is loaded on the board (sinks the line) and
-                cannot be used; IO6 is free.
+                ESP-C3-12F-Kit GPIO1 has a 1k resistor to GND on the board
+                (ADC divider) and cannot be used; IO6 is free.
 
         config RW_ANALOG_SENSE_GPIO
             int "ADC GPIO sensing the key line for Cyfral/Metakom (-1 = off)"
@@ -26,7 +26,9 @@ menu "RW1990 Programmer"
                 Reading them needs an ADC1-capable pin that sees that line:
                 the 1-Wire data pin itself when it has an ADC1 channel (ESP32-C6
                 GPIO4 = ADC1_CH4), otherwise a separate pin bridged to the line
-                (ESP-C3-12F-Kit: IO6 has no ADC, bridge it to IO0 = ADC1_CH0).
+                (ESP-C3-12F-Kit: IO6 has no ADC, bridge it to GPIO0 = ADC1_CH0;
+                note the kit's header pin printed "IO0" is wired to GPIO1, the
+                real GPIO0 is the pin printed "NC" between EN and GND).
                 ADC2 pins do not work with Wi-Fi.
 
         config RW_KEY_POLL_INTERVAL_MS
