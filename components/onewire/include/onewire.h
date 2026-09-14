@@ -94,6 +94,20 @@ void onewire_pulse_low(onewire_bus_t *bus, uint32_t low_us);
 /** @brief Check whether the bus is idle (pulled high) - detects shorted contacts. */
 bool onewire_is_idle(onewire_bus_t *bus);
 
+/** Pad probe results, each the level read in that configuration. */
+typedef struct {
+    int input_floating;  /**< Input, no pulls: what the external circuit holds.    */
+    int input_pullup;    /**< Input + internal ~45k pull-up.                      */
+    int driven_high;     /**< Push-pull high for 1 ms: 0 here = hard short/dead pad. */
+    int od_released;     /**< Normal open-drain idle, as used for 1-Wire.         */
+} onewire_pad_probe_t;
+
+/**
+ * @brief Exercise the pad in several modes to tell wiring faults apart
+ *        (bring-up aid). Restores the open-drain configuration afterwards.
+ */
+void onewire_pad_probe(onewire_bus_t *bus, onewire_pad_probe_t *out);
+
 /** @brief Dallas/Maxim CRC-8 (polynomial 0x31, reflected), as used in ROM codes. */
 uint8_t onewire_crc8(const uint8_t *data, size_t len);
 

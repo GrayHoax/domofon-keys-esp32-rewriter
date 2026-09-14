@@ -54,6 +54,18 @@ static inline int bus_level(const onewire_bus_t *bus)
     return gpio_get_level(bus->pin);
 }
 
+static esp_err_t pad_config(gpio_num_t pin, gpio_mode_t mode, bool pullup)
+{
+    const gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << pin,
+        .mode = mode,
+        .pull_up_en = pullup ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    return gpio_config(&cfg);
+}
+
 esp_err_t onewire_init(onewire_bus_t *bus, gpio_num_t pin)
 {
     ESP_RETURN_ON_FALSE(bus != NULL, ESP_ERR_INVALID_ARG, TAG, "bus is NULL");
@@ -63,18 +75,34 @@ esp_err_t onewire_init(onewire_bus_t *bus, gpio_num_t pin)
     bus->timings = &ONEWIRE_TIMINGS_STANDARD;
     portMUX_INITIALIZE(&bus->lock);
 
-    const gpio_config_t cfg = {
-        .pin_bit_mask = 1ULL << pin,
-        .mode = GPIO_MODE_INPUT_OUTPUT_OD,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    ESP_RETURN_ON_ERROR(gpio_config(&cfg), TAG, "gpio_config failed");
+    ESP_RETURN_ON_ERROR(pad_config(pin, GPIO_MODE_INPUT_OUTPUT_OD, true), TAG, "gpio_config failed");
     bus_release(bus);
 
     ESP_LOGI(TAG, "1-Wire bus on GPIO%d", pin);
     return ESP_OK;
+}
+
+void onewire_pad_probe(onewire_bus_t *bus, onewire_pad_probe_t *out)
+{
+    const gpio_num_t pin = bus->pin;
+
+    pad_config(pin, GPIO_MODE_INPUT, false);
+    esp_rom_delay_us(1000);
+    out->input_floating = bus_level(bus);
+
+    pad_config(pin, GPIO_MODE_INPUT, true);
+    esp_rom_delay_us(1000);
+    out->input_pullup = bus_level(bus);
+
+    pad_config(pin, GPIO_MODE_INPUT_OUTPUT, false);
+    gpio_set_level(pin, 1);
+    esp_rom_delay_us(1000);
+    out->driven_high = bus_level(bus);
+
+    pad_config(pin, GPIO_MODE_INPUT_OUTPUT_OD, true);
+    bus_release(bus);
+    esp_rom_delay_us(1000);
+    out->od_released = bus_level(bus);
 }
 
 void onewire_set_timings(onewire_bus_t *bus, const onewire_timings_t *timings)

@@ -601,6 +601,13 @@ esp_err_t ibutton_read(ibutton_key_t *out)
     return err;
 }
 
+void ibutton_pad_probe(onewire_pad_probe_t *out)
+{
+    xSemaphoreTake(s_ib.bus_mutex, portMAX_DELAY);
+    onewire_pad_probe(&s_ib.bus, out);
+    xSemaphoreGive(s_ib.bus_mutex);
+}
+
 esp_err_t ibutton_active_probe(activekey_result_t *out)
 {
     ESP_RETURN_ON_FALSE(out != NULL, ESP_ERR_INVALID_ARG, TAG, "out is NULL");

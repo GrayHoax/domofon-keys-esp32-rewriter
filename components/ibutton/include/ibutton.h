@@ -15,6 +15,7 @@
 #include "driver/gpio.h"
 #include "esp_err.h"
 #include "activekey.h"
+#include "onewire.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -105,6 +106,9 @@ void ibutton_get_state(ibutton_reader_state_t *out);
  *         ESP_ERR_NOT_SUPPORTED when a Cyfral/Metakom key answered instead (see ibutton_get_state()).
  */
 esp_err_t ibutton_read(ibutton_key_t *out);
+
+/** @brief Pad probe (see onewire_pad_probe()) with the bus locked; for diagnostics. */
+void ibutton_pad_probe(onewire_pad_probe_t *out);
 
 /**
  * @brief Run one Cyfral/Metakom capture with the bus locked; for diagnostics.

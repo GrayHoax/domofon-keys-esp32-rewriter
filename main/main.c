@@ -135,6 +135,24 @@ static void on_write_job_done(const ibutton_write_job_t *job, void *ctx)
 static void line_self_test(void)
 {
     int level = gpio_get_level(CONFIG_RW_ONEWIRE_GPIO);
+    if (level == 0) {
+        /* Something holds the line low: find out who. */
+        onewire_pad_probe_t p;
+        ibutton_pad_probe(&p);
+        ESP_LOGW(TAG, "line self-test: pad probe - floating input %d, internal pull-up %d, driven high %d, "
+                      "open-drain idle %d", p.input_floating, p.input_pullup, p.driven_high, p.od_released);
+        if (p.driven_high == 0) {
+            ESP_LOGE(TAG, "line self-test: pin stays low even when driven high - hard short to GND "
+                          "(DATA/GND swapped at the contact pad?) or wrong header pin");
+        } else if (p.input_pullup == 0) {
+            ESP_LOGE(TAG, "line self-test: an external load sinks the line (< ~40k to GND) - "
+                          "check what else is connected to GPIO%d", CONFIG_RW_ONEWIRE_GPIO);
+        } else {
+            ESP_LOGE(TAG, "line self-test: line is high as an input but low as open-drain output - "
+                          "the pin is being driven by the chip; report this");
+        }
+        level = gpio_get_level(CONFIG_RW_ONEWIRE_GPIO);
+    }
     activekey_result_t adc = {0};
     bool have_adc = activekey_available() && ibutton_active_probe(&adc) != ESP_ERR_TIMEOUT;
 
