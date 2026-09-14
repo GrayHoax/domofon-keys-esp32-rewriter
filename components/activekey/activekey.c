@@ -282,7 +282,8 @@ static esp_err_t capture(size_t *count)
     adc_continuous_flush_pool(s.adc);
     ESP_RETURN_ON_ERROR(adc_continuous_start(s.adc), TAG, "adc start");
 
-    while (n < CAPTURE_SAMPLES) {
+    /* Bounded so a misbehaving driver can never wedge the poll task. */
+    for (int frames = 0; n < CAPTURE_SAMPLES && frames < CAPTURE_SAMPLES / FRAME_SAMPLES * 2; frames++) {
         uint32_t got = 0;
         err = adc_continuous_read(s.adc, s.raw, FRAME_BYTES, &got, READ_TIMEOUT_MS);
         if (err != ESP_OK) {

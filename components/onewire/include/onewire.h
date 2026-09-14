@@ -40,7 +40,7 @@ extern "C" {
 typedef struct {
     uint16_t reset_low_us;       /**< Master reset pulse.                                 */
     uint16_t presence_window_us; /**< After release: keep looking for a presence pulse.   */
-    uint16_t reset_tail_us;      /**< Recovery after the window.                          */
+    uint16_t reset_tail_us;      /**< Minimum bus-high time after release (recovery).     */
     uint8_t  write1_low_us;
     uint8_t  write1_rec_us;
     uint8_t  write0_low_us;

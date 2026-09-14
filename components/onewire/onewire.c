@@ -11,7 +11,7 @@ static const char *TAG = "onewire";
 const onewire_timings_t ONEWIRE_TIMINGS_STANDARD = {
     .reset_low_us = 480,
     .presence_window_us = 250,
-    .reset_tail_us = 240,
+    .reset_tail_us = 480,
     .write1_low_us = 6,
     .write1_rec_us = 64,
     .write0_low_us = 60,
@@ -26,7 +26,7 @@ const onewire_timings_t ONEWIRE_TIMINGS_STANDARD = {
 const onewire_timings_t ONEWIRE_TIMINGS_TM01 = {
     .reset_low_us = 740,
     .presence_window_us = 250,
-    .reset_tail_us = 240,
+    .reset_tail_us = 480,
     .write1_low_us = 5,
     .write1_rec_us = 80,
     .write0_low_us = 70,
@@ -36,7 +36,8 @@ const onewire_timings_t ONEWIRE_TIMINGS_TM01 = {
     .read_rec_us = 70,
 };
 
-#define PRESENCE_POLL_US 2
+#define PRESENCE_POLL_US     2
+#define PRESENCE_END_MAX_US  600 /* Presence pulse still low after this: shorted. */
 
 static inline void bus_drive_low(const onewire_bus_t *bus)
 {
@@ -91,6 +92,7 @@ bool onewire_reset(onewire_bus_t *bus)
     const onewire_timings_t *t = bus->timings;
     bool released = false; /* Line seen high after our pulse: rules out a short. */
     bool presence = false;
+    uint32_t elapsed = 0;  /* Microseconds since release.                        */
 
     portENTER_CRITICAL(&bus->lock);
     bus_drive_low(bus);
@@ -100,7 +102,7 @@ bool onewire_reset(onewire_bus_t *bus)
     /* A slave answers 15..60 us after release with a 60..240 us low pulse;
      * TM01-type blanks answer noticeably later. Polling the whole window
      * catches any of them without knowing which one is attached. */
-    for (uint32_t elapsed = 0; elapsed < t->presence_window_us; elapsed += PRESENCE_POLL_US) {
+    for (; elapsed < t->presence_window_us; elapsed += PRESENCE_POLL_US) {
         int level = bus_level(bus);
         if (!released) {
             released = (level != 0);
@@ -112,12 +114,22 @@ bool onewire_reset(onewire_bus_t *bus)
     }
     portEXIT_CRITICAL(&bus->lock);
 
-    /* Let the presence pulse finish; nothing time-critical here. */
-    esp_rom_delay_us(t->reset_tail_us);
+    /* Let the presence pulse finish: it may last up to 240 us and, for a
+     * late answer, end 300+ us after release. Only a line that is still
+     * low well beyond that is shorted rather than a device. */
+    if (presence) {
+        while (bus_level(bus) == 0 && elapsed < PRESENCE_END_MAX_US) {
+            esp_rom_delay_us(PRESENCE_POLL_US * 5);
+            elapsed += PRESENCE_POLL_US * 5;
+        }
+        if (bus_level(bus) == 0) {
+            return false;
+        }
+    }
 
-    /* A bus that is still low after the reset sequence is shorted, not a device. */
-    if (presence && bus_level(bus) == 0) {
-        return false;
+    /* Recovery: the slave needs the bus high for reset_tail_us in total. */
+    if (elapsed < t->reset_tail_us) {
+        esp_rom_delay_us(t->reset_tail_us - elapsed);
     }
     return presence;
 }
