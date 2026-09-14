@@ -128,6 +128,7 @@ static void add_reader_state(cJSON *obj, const ibutton_reader_state_t *st)
     cJSON_AddBoolToObject(obj, "present", st->present);
     cJSON_AddBoolToObject(obj, "crc_ok", st->crc_ok);
     cJSON_AddBoolToObject(obj, "bus_shorted", st->bus_shorted);
+    cJSON_AddBoolToObject(obj, "tm01_timing", st->tm01_timing);
     if (st->present) {
         ibutton_key_to_str(&st->key, id);
         cJSON_AddStringToObject(obj, "id", id);

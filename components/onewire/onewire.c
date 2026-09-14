@@ -5,17 +5,38 @@
 
 static const char *TAG = "onewire";
 
-/* Standard-speed 1-Wire timing (microseconds), Maxim AN126 "recommended" values. */
-#define T_RESET_LOW     480
-#define T_PRESENCE_WAIT 70
-#define T_RESET_TAIL    410
-#define T_WRITE1_LOW    6
-#define T_WRITE1_REC    64
-#define T_WRITE0_LOW    60
-#define T_WRITE0_REC    10
-#define T_READ_LOW      6
-#define T_READ_SAMPLE   9
-#define T_READ_REC      55
+/* Maxim AN126 "recommended" standard-speed values. The read sample sits a
+ * little before the 15 us limit: a genuine slave holds a zero for >= 15 us,
+ * and sampling early tolerates clones that let go sooner. */
+const onewire_timings_t ONEWIRE_TIMINGS_STANDARD = {
+    .reset_low_us = 480,
+    .presence_window_us = 250,
+    .reset_tail_us = 240,
+    .write1_low_us = 6,
+    .write1_rec_us = 64,
+    .write0_low_us = 60,
+    .write0_rec_us = 10,
+    .read_low_us = 6,
+    .read_sample_us = 13,
+    .read_rec_us = 52,
+};
+
+/* TM01A/TM01C: longer reset, presence arrives ~100-150 us after release,
+ * read slots sampled at 10 us. Values follow the Flipper Zero tm01x set. */
+const onewire_timings_t ONEWIRE_TIMINGS_TM01 = {
+    .reset_low_us = 740,
+    .presence_window_us = 250,
+    .reset_tail_us = 240,
+    .write1_low_us = 5,
+    .write1_rec_us = 80,
+    .write0_low_us = 70,
+    .write0_rec_us = 10,
+    .read_low_us = 5,
+    .read_sample_us = 10,
+    .read_rec_us = 70,
+};
+
+#define PRESENCE_POLL_US 2
 
 static inline void bus_drive_low(const onewire_bus_t *bus)
 {
@@ -38,6 +59,7 @@ esp_err_t onewire_init(onewire_bus_t *bus, gpio_num_t pin)
     ESP_RETURN_ON_FALSE(GPIO_IS_VALID_OUTPUT_GPIO(pin), ESP_ERR_INVALID_ARG, TAG, "invalid GPIO %d", pin);
 
     bus->pin = pin;
+    bus->timings = &ONEWIRE_TIMINGS_STANDARD;
     portMUX_INITIALIZE(&bus->lock);
 
     const gpio_config_t cfg = {
@@ -54,20 +76,44 @@ esp_err_t onewire_init(onewire_bus_t *bus, gpio_num_t pin)
     return ESP_OK;
 }
 
+void onewire_set_timings(onewire_bus_t *bus, const onewire_timings_t *timings)
+{
+    bus->timings = timings ? timings : &ONEWIRE_TIMINGS_STANDARD;
+}
+
+const onewire_timings_t *onewire_get_timings(const onewire_bus_t *bus)
+{
+    return bus->timings;
+}
+
 bool onewire_reset(onewire_bus_t *bus)
 {
-    bool presence;
+    const onewire_timings_t *t = bus->timings;
+    bool released = false; /* Line seen high after our pulse: rules out a short. */
+    bool presence = false;
 
     portENTER_CRITICAL(&bus->lock);
     bus_drive_low(bus);
-    esp_rom_delay_us(T_RESET_LOW);
+    esp_rom_delay_us(t->reset_low_us);
     bus_release(bus);
-    esp_rom_delay_us(T_PRESENCE_WAIT);
-    presence = (bus_level(bus) == 0);
+
+    /* A slave answers 15..60 us after release with a 60..240 us low pulse;
+     * TM01-type blanks answer noticeably later. Polling the whole window
+     * catches any of them without knowing which one is attached. */
+    for (uint32_t elapsed = 0; elapsed < t->presence_window_us; elapsed += PRESENCE_POLL_US) {
+        int level = bus_level(bus);
+        if (!released) {
+            released = (level != 0);
+        } else if (level == 0) {
+            presence = true;
+            break;
+        }
+        esp_rom_delay_us(PRESENCE_POLL_US);
+    }
     portEXIT_CRITICAL(&bus->lock);
 
     /* Let the presence pulse finish; nothing time-critical here. */
-    esp_rom_delay_us(T_RESET_TAIL);
+    esp_rom_delay_us(t->reset_tail_us);
 
     /* A bus that is still low after the reset sequence is shorted, not a device. */
     if (presence && bus_level(bus) == 0) {
@@ -78,31 +124,34 @@ bool onewire_reset(onewire_bus_t *bus)
 
 void onewire_write_bit(onewire_bus_t *bus, bool bit)
 {
+    const onewire_timings_t *t = bus->timings;
+
     portENTER_CRITICAL(&bus->lock);
     bus_drive_low(bus);
     if (bit) {
-        esp_rom_delay_us(T_WRITE1_LOW);
+        esp_rom_delay_us(t->write1_low_us);
         bus_release(bus);
-        esp_rom_delay_us(T_WRITE1_REC);
+        esp_rom_delay_us(t->write1_rec_us);
     } else {
-        esp_rom_delay_us(T_WRITE0_LOW);
+        esp_rom_delay_us(t->write0_low_us);
         bus_release(bus);
-        esp_rom_delay_us(T_WRITE0_REC);
+        esp_rom_delay_us(t->write0_rec_us);
     }
     portEXIT_CRITICAL(&bus->lock);
 }
 
 bool onewire_read_bit(onewire_bus_t *bus)
 {
+    const onewire_timings_t *t = bus->timings;
     bool bit;
 
     portENTER_CRITICAL(&bus->lock);
     bus_drive_low(bus);
-    esp_rom_delay_us(T_READ_LOW);
+    esp_rom_delay_us(t->read_low_us);
     bus_release(bus);
-    esp_rom_delay_us(T_READ_SAMPLE);
+    esp_rom_delay_us(t->read_sample_us - t->read_low_us);
     bit = (bus_level(bus) != 0);
-    esp_rom_delay_us(T_READ_REC);
+    esp_rom_delay_us(t->read_rec_us);
     portEXIT_CRITICAL(&bus->lock);
 
     return bit;

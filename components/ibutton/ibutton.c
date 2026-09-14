@@ -24,6 +24,11 @@ static const char *TAG = "ibutton";
 #define RW1990_UNLOCK_PULSE_US 60 /* Long (logic 0) pulse for the unlock byte. */
 #define RW1990_LOCK_PULSE_US   10 /* Short (logic 1) pulse for the lock byte.  */
 
+/* TM01A/TM01C in Dallas mode (0xCA/0xCB would finalise as Cyfral/Metakom). */
+#define TM01_CMD_WRITE_FLAG    0xC1
+#define TM01_CMD_WRITE_ROM     0xC5
+#define TM01_FLAG_SETTLE_MS    5
+
 #define BUS_MUTEX_TIMEOUT_MS 3000
 #define POLL_TASK_STACK      4096 /* Event callback may write to NVS. */
 #define POLL_TASK_PRIO       5
@@ -151,6 +156,8 @@ const char *ibutton_write_variant_str(ibutton_write_variant_t v)
         return "rw1990v1";
     case IBUTTON_WRITE_RW1990_V2:
         return "rw1990v2";
+    case IBUTTON_WRITE_TM01:
+        return "tm01";
     default:
         return "unknown";
     }
@@ -174,16 +181,38 @@ esp_err_t ibutton_write_variant_from_str(const char *s, ibutton_write_variant_t 
 /* Bus-level operations (caller holds bus_mutex)                              */
 /* ------------------------------------------------------------------------- */
 
+/** Last successful bus_read_rom() needed the TM01 timing set. Poll-task/bus-owner context only. */
+static bool s_last_read_tm01;
+
+static esp_err_t bus_read_rom_with(ibutton_key_t *out, const onewire_timings_t *timings)
+{
+    onewire_set_timings(&s_ib.bus, timings);
+    if (!onewire_reset(&s_ib.bus)) {
+        onewire_set_timings(&s_ib.bus, &ONEWIRE_TIMINGS_STANDARD);
+        return ESP_ERR_NOT_FOUND;
+    }
+    onewire_write_byte(&s_ib.bus, ONEWIRE_CMD_READ_ROM);
+    onewire_read_bytes(&s_ib.bus, out->rom, IBUTTON_ROM_LEN);
+    onewire_set_timings(&s_ib.bus, &ONEWIRE_TIMINGS_STANDARD);
+    return ESP_OK;
+}
+
+/**
+ * Reads the ROM with standard timing first and, when nothing answers, once
+ * more with the TM01 set: those blanks miss a 480 us reset and answer late.
+ */
 static esp_err_t bus_read_rom(ibutton_key_t *out)
 {
     if (!onewire_is_idle(&s_ib.bus)) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (!onewire_reset(&s_ib.bus)) {
-        return ESP_ERR_NOT_FOUND;
+    s_last_read_tm01 = false;
+    if (bus_read_rom_with(out, &ONEWIRE_TIMINGS_STANDARD) != ESP_OK) {
+        if (bus_read_rom_with(out, &ONEWIRE_TIMINGS_TM01) != ESP_OK) {
+            return ESP_ERR_NOT_FOUND;
+        }
+        s_last_read_tm01 = true;
     }
-    onewire_write_byte(&s_ib.bus, ONEWIRE_CMD_READ_ROM);
-    onewire_read_bytes(&s_ib.bus, out->rom, IBUTTON_ROM_LEN);
 
     /* All 0xFF means the key was pulled off mid-transaction; all zero is a glitch. */
     bool all_ff = true, all_00 = true;
@@ -244,6 +273,49 @@ static ibutton_write_result_t rw1990_program(const ibutton_key_t *key, ibutton_w
     return IBUTTON_WRITE_OK;
 }
 
+/**
+ * TM01A/TM01C, Dallas mode. Same shape as RW1990.2 (write flag = 1 bit,
+ * ROM bytes direct, flag = 0 bit) but with its own commands and the slower
+ * TM01 slot timing for the whole conversation.
+ */
+static ibutton_write_result_t tm01_program(const ibutton_key_t *key)
+{
+    ibutton_write_result_t result = IBUTTON_WRITE_OK;
+    onewire_set_timings(&s_ib.bus, &ONEWIRE_TIMINGS_TM01);
+
+    /* Step 1: raise the write flag. */
+    if (!onewire_reset(&s_ib.bus)) {
+        result = IBUTTON_WRITE_ERR_NO_DEVICE;
+        goto out;
+    }
+    onewire_write_byte(&s_ib.bus, TM01_CMD_WRITE_FLAG);
+    onewire_write_bit(&s_ib.bus, true);
+    vTaskDelay(pdMS_TO_TICKS(TM01_FLAG_SETTLE_MS));
+
+    /* Step 2: write the ROM, one bit per programming cycle. */
+    if (!onewire_reset(&s_ib.bus)) {
+        result = IBUTTON_WRITE_ERR_NO_DEVICE;
+        goto out;
+    }
+    onewire_write_byte(&s_ib.bus, TM01_CMD_WRITE_ROM);
+    for (int i = 0; i < IBUTTON_ROM_LEN; i++) {
+        rw1990_write_byte(key->rom[i], false);
+    }
+
+    /* Step 3: drop the write flag. */
+    if (!onewire_reset(&s_ib.bus)) {
+        result = IBUTTON_WRITE_ERR_NO_DEVICE;
+        goto out;
+    }
+    onewire_write_byte(&s_ib.bus, TM01_CMD_WRITE_FLAG);
+    onewire_write_bit(&s_ib.bus, false);
+    vTaskDelay(pdMS_TO_TICKS(RW1990_PROG_PULSE_MS));
+
+out:
+    onewire_set_timings(&s_ib.bus, &ONEWIRE_TIMINGS_STANDARD);
+    return result;
+}
+
 /* ------------------------------------------------------------------------- */
 /* State handling                                                             */
 /* ------------------------------------------------------------------------- */
@@ -251,16 +323,18 @@ static ibutton_write_result_t rw1990_program(const ibutton_key_t *key, ibutton_w
 static void state_update(bool present, bool crc_ok, bool shorted, const ibutton_key_t *key)
 {
     bool changed = false;
+    bool tm01 = present && s_last_read_tm01;
     ibutton_reader_state_t snapshot;
 
     xSemaphoreTake(s_ib.state_mutex, portMAX_DELAY);
     ibutton_reader_state_t *st = &s_ib.state;
 
-    if (st->present != present || st->crc_ok != crc_ok || st->bus_shorted != shorted ||
+    if (st->present != present || st->crc_ok != crc_ok || st->bus_shorted != shorted || st->tm01_timing != tm01 ||
         (present && key != NULL && !ibutton_key_equal(&st->key, key))) {
         st->present = present;
         st->crc_ok = crc_ok;
         st->bus_shorted = shorted;
+        st->tm01_timing = tm01;
         if (present && key != NULL) {
             st->key = *key;
         }
@@ -274,7 +348,8 @@ static void state_update(bool present, bool crc_ok, bool shorted, const ibutton_
         if (present) {
             char str[IBUTTON_ROM_STR_LEN];
             ibutton_key_to_str(&snapshot.key, str);
-            ESP_LOGI(TAG, "key attached: %s (crc %s)", str, crc_ok ? "ok" : "BAD");
+            ESP_LOGI(TAG, "key attached: %s (crc %s%s)", str, crc_ok ? "ok" : "BAD",
+                     tm01 ? ", TM01 timing" : "");
         } else if (shorted) {
             ESP_LOGW(TAG, "bus shorted");
         } else {
@@ -514,7 +589,7 @@ ibutton_write_result_t ibutton_write(const ibutton_key_t *key, ibutton_write_var
         goto out;
     }
 
-    result = rw1990_program(key, variant);
+    result = (variant == IBUTTON_WRITE_TM01) ? tm01_program(key) : rw1990_program(key, variant);
     if (result != IBUTTON_WRITE_OK) {
         goto out;
     }

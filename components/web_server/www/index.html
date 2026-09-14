@@ -117,6 +117,7 @@
       <select id="variant">
         <option value="rw1990v1">RW1990.1 (0xD1, инверсные данные)</option>
         <option value="rw1990v2">RW1990.2 (0x1D, прямые данные)</option>
+        <option value="tm01">TM01A / TM01C (0xC1/0xC5, режим Dallas)</option>
       </select>
       <div class="check"><input type="checkbox" id="fixCrc"><label for="fixCrc" style="margin:0">Автоисправление CRC</label></div>
       <div class="row">
@@ -240,6 +241,7 @@
   <select id="writeDlgVariant">
     <option value="rw1990v1">RW1990.1 (0xD1, инверсные данные)</option>
     <option value="rw1990v2">RW1990.2 (0x1D, прямые данные)</option>
+    <option value="tm01">TM01A / TM01C (0xC1/0xC5, режим Dallas)</option>
   </select>
   <div class="hint">Нажмите «Записать», затем приложите заготовку к контактам и не отрывайте до конца записи (~1 с).</div>
   <div class="row">
@@ -332,9 +334,11 @@
     } else if (r.present) {
       el.textContent = fmtId(r.id);
       el.className = 'keyid' + (r.crc_ok ? '' : ' bad');
-      hint.textContent = r.crc_ok
+      hint.textContent = (r.crc_ok
         ? 'CRC верна · семейство 0x' + r.family.toString(16).toUpperCase().padStart(2, '0') + (r.family === 1 ? ' (DS1990A)' : '')
-        : 'Ошибка CRC — плохой контакт или повреждённый ключ';
+        : 'Ошибка CRC — плохой контакт или повреждённый ключ')
+        + (r.tm01_timing ? ' · отвечает только на тайминги TM01 — для записи выберите тип TM01A/TM01C' : '');
+      if (r.tm01_timing && $('variant').value !== 'tm01' && !state.busy) $('variant').value = 'tm01';
       if (r.crc_ok && state.lastKey !== r.id) {
         log('Прочитан ключ ' + fmtId(r.id) + (r.name ? ' — ' + r.name : ''), 'ok');
         state.dbDirty = true;

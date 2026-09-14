@@ -30,9 +30,33 @@ extern "C" {
 #define ONEWIRE_CMD_MATCH_ROM  0x55
 #define ONEWIRE_CMD_SEARCH_ROM 0xF0
 
+/**
+ * Slot timing set, microseconds. Standard 1-Wire devices follow Maxim's
+ * recommended values; some rewritable clones (TM01A/TM01C) answer the reset
+ * later and release read slots earlier than DS1990A, so they get their own
+ * set. Presence is detected by polling the line during `presence_window_us`
+ * rather than by a single sample, which covers both families.
+ */
+typedef struct {
+    uint16_t reset_low_us;       /**< Master reset pulse.                                 */
+    uint16_t presence_window_us; /**< After release: keep looking for a presence pulse.   */
+    uint16_t reset_tail_us;      /**< Recovery after the window.                          */
+    uint8_t  write1_low_us;
+    uint8_t  write1_rec_us;
+    uint8_t  write0_low_us;
+    uint8_t  write0_rec_us;
+    uint8_t  read_low_us;
+    uint8_t  read_sample_us;     /**< Sample point measured from the falling edge.        */
+    uint8_t  read_rec_us;
+} onewire_timings_t;
+
+extern const onewire_timings_t ONEWIRE_TIMINGS_STANDARD; /**< DS1990A, RW1990, TM2004 ... */
+extern const onewire_timings_t ONEWIRE_TIMINGS_TM01;     /**< TM01A / TM01C blanks.       */
+
 typedef struct {
     gpio_num_t pin;
     portMUX_TYPE lock;
+    const onewire_timings_t *timings;
 } onewire_bus_t;
 
 /**
@@ -42,6 +66,10 @@ typedef struct {
  * pull-up alone is too weak for reliable operation with iButton contacts.
  */
 esp_err_t onewire_init(onewire_bus_t *bus, gpio_num_t pin);
+
+/** @brief Select the slot timing set (ONEWIRE_TIMINGS_STANDARD after init). */
+void onewire_set_timings(onewire_bus_t *bus, const onewire_timings_t *timings);
+const onewire_timings_t *onewire_get_timings(const onewire_bus_t *bus);
 
 /**
  * @brief Issue a reset pulse and sample the presence pulse.

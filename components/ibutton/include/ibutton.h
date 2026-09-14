@@ -27,8 +27,9 @@ extern "C" {
 
 /** Writable key families. */
 typedef enum {
-    IBUTTON_WRITE_RW1990_V1 = 0, /**< RW1990.1: 0xD1 unlock, inverted data */
-    IBUTTON_WRITE_RW1990_V2,     /**< RW1990.2: 0x1D unlock, direct data   */
+    IBUTTON_WRITE_RW1990_V1 = 0, /**< RW1990.1: 0xD1 unlock, inverted data            */
+    IBUTTON_WRITE_RW1990_V2,     /**< RW1990.2: 0x1D unlock, direct data              */
+    IBUTTON_WRITE_TM01,          /**< TM01A/TM01C (Dallas mode): 0xC1 flag, 0xC5 ROM */
     IBUTTON_WRITE_VARIANT_MAX,
 } ibutton_write_variant_t;
 
@@ -42,6 +43,7 @@ typedef struct {
     bool present;       /**< A device answered the last reset pulse. */
     bool crc_ok;        /**< ROM CRC of the last read matched.       */
     bool bus_shorted;   /**< Data line held low: contacts shorted.   */
+    bool tm01_timing;   /**< Key answered only with TM01 slot timing. */
     ibutton_key_t key;  /**< Last ROM read while present.            */
     int64_t updated_us; /**< esp_timer timestamp of the last change. */
 } ibutton_reader_state_t;
