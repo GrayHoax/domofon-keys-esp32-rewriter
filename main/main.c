@@ -162,11 +162,14 @@ static void line_self_test(void)
     } else {
         ESP_LOGI(TAG, "line self-test: GPIO%d reads %s", CONFIG_RW_ONEWIRE_GPIO, level ? "HIGH" : "LOW");
     }
-    if (level == 0 && have_adc && adc.adc_max > 3000) {
+    if (level == 0 && have_adc && adc.adc_max > 3000 && CONFIG_RW_ANALOG_SENSE_GPIO == CONFIG_RW_ONEWIRE_GPIO) {
         ESP_LOGE(TAG, "line self-test: ADC sees the line high but the digital input reads low - "
                       "GPIO%d input path is blocked by the analog configuration", CONFIG_RW_ONEWIRE_GPIO);
     } else if (level == 0) {
         ESP_LOGW(TAG, "line self-test: data line is low with no key - check the pull-up to 3V3 and the wiring");
+    } else if (have_adc && adc.adc_max < 3000 && CONFIG_RW_ANALOG_SENSE_GPIO != CONFIG_RW_ONEWIRE_GPIO) {
+        ESP_LOGW(TAG, "line self-test: ADC on GPIO%d does not see the pull-up - is the bridge to GPIO%d in place? "
+                      "Cyfral/Metakom keys will not be read", CONFIG_RW_ANALOG_SENSE_GPIO, CONFIG_RW_ONEWIRE_GPIO);
     }
 }
 

@@ -5,29 +5,29 @@ menu "RW1990 Programmer"
         config RW_ONEWIRE_GPIO
             int "1-Wire data GPIO"
             range 0 48
-            default 1 if IDF_TARGET_ESP32C3
+            default 6 if IDF_TARGET_ESP32C3
             default 4
             help
                 GPIO connected to the iButton contact pad. Requires an external
-                2.2k..4.7k pull-up to 3.3 V. Prefer an ADC1-capable pin so the
-                same line can be sensed for Cyfral/Metakom keys (ESP32-C3:
-                GPIO0..4, ESP32-C6: GPIO0..6). Avoid strapping pins (ESP32-C3:
-                GPIO2/8/9, ESP32-C6: GPIO4/5/8/9/15) and UART0 pins.
+                2.2k..4.7k pull-up to 3.3 V. Avoid strapping pins (ESP32-C3:
+                GPIO2/8/9, ESP32-C6: GPIO4/5/8/9/15) and UART0 pins. On the
+                ESP-C3-12F-Kit IO1 is loaded on the board (sinks the line) and
+                cannot be used; IO6 is free.
 
         config RW_ANALOG_SENSE_GPIO
             int "ADC GPIO sensing the key line for Cyfral/Metakom (-1 = off)"
             range -1 48
-            default 1 if IDF_TARGET_ESP32C3
+            default 0 if IDF_TARGET_ESP32C3
             default 4 if IDF_TARGET_ESP32C6
             default -1
             help
                 Cyfral and Metakom keys (and TM01A blanks finalised as such)
                 stream their code by modulating the current on the data line.
                 Reading them needs an ADC1-capable pin that sees that line:
-                normally the 1-Wire data pin itself (defaults: ESP32-C3 GPIO1 =
-                ADC1_CH1, ESP32-C6 GPIO4 = ADC1_CH4), or a separate pin bridged
-                to it when the data pin has no ADC. ADC2 pins do not work with
-                Wi-Fi.
+                the 1-Wire data pin itself when it has an ADC1 channel (ESP32-C6
+                GPIO4 = ADC1_CH4), otherwise a separate pin bridged to the line
+                (ESP-C3-12F-Kit: IO6 has no ADC, bridge it to IO0 = ADC1_CH0).
+                ADC2 pins do not work with Wi-Fi.
 
         config RW_KEY_POLL_INTERVAL_MS
             int "Reader poll interval (ms)"
