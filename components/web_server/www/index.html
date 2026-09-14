@@ -331,6 +331,13 @@
       el.textContent = 'Замыкание линии данных';
       el.className = 'keyid none bad';
       hint.textContent = 'Проверьте контакты считывателя.';
+    } else if (r.present && r.proto === 'unknown') {
+      el.textContent = 'Активный ключ';
+      el.className = 'keyid bad';
+      hint.textContent = 'На линии есть сигнал Cyfral/Metakom, но код не декодируется. Прижмите ключ плотнее; для диагностики — /api/key/analog.';
+      $('keyDb').textContent = '';
+      $('btnUse').disabled = true;
+      return;
     } else if (r.present && r.proto && r.proto !== 'dallas') {
       const label = r.proto === 'cyfral' ? 'Cyfral' : 'Metakom';
       el.textContent = label + ' ' + r.code;

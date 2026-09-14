@@ -257,8 +257,9 @@ static esp_err_t h_key_read(httpd_req_t *req)
         }
         return web_send_json(req, root, NULL);
     }
-    case ESP_ERR_NOT_SUPPORTED: {
-        /* A Cyfral/Metakom key answered: report it the way /api/key does. */
+    case ESP_ERR_NOT_SUPPORTED:
+    case ESP_ERR_INVALID_RESPONSE: {
+        /* A Cyfral/Metakom key (or an undecoded stream): report it the way /api/key does. */
         ibutton_reader_state_t st;
         ibutton_get_state(&st);
         cJSON *root = cJSON_CreateObject();

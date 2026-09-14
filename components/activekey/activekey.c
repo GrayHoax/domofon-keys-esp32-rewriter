@@ -475,6 +475,8 @@ const char *activekey_proto_str(activekey_proto_t proto)
         return "cyfral";
     case ACTIVEKEY_PROTO_METAKOM:
         return "metakom";
+    case ACTIVEKEY_PROTO_UNKNOWN:
+        return "unknown";
     default:
         return "none";
     }

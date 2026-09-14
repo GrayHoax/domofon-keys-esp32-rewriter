@@ -245,6 +245,23 @@ bool onewire_is_idle(onewire_bus_t *bus)
     return bus_level(bus) != 0;
 }
 
+bool onewire_line_toggles(onewire_bus_t *bus, uint32_t window_us)
+{
+    bool seen_low = false, seen_high = false;
+    for (uint32_t elapsed = 0; elapsed < window_us; elapsed += 5) {
+        if (bus_level(bus)) {
+            seen_high = true;
+        } else {
+            seen_low = true;
+        }
+        if (seen_low && seen_high) {
+            return true;
+        }
+        esp_rom_delay_us(5);
+    }
+    return false;
+}
+
 uint8_t onewire_crc8(const uint8_t *data, size_t len)
 {
     uint8_t crc = 0;

@@ -29,6 +29,7 @@ typedef enum {
     ACTIVEKEY_PROTO_NONE = 0,
     ACTIVEKEY_PROTO_CYFRAL,  /**< 16-bit code, 8 one-hot nibbles between 0001 markers. */
     ACTIVEKEY_PROTO_METAKOM, /**< 32-bit code, 4 even-parity bytes between 010 markers.  */
+    ACTIVEKEY_PROTO_UNKNOWN, /**< Line is streaming something the decoders reject.        */
 } activekey_proto_t;
 
 /** Longest printable code ("XXXXXXXX") plus terminator. */

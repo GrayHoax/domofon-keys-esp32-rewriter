@@ -46,7 +46,7 @@ typedef struct {
     bool crc_ok;        /**< ROM CRC of the last read matched.       */
     bool bus_shorted;   /**< Data line held low: contacts shorted.   */
     bool tm01_timing;   /**< Key answered only with TM01 slot timing. */
-    activekey_proto_t active_proto; /**< Cyfral/Metakom key on the pad (key/crc_ok not meaningful). */
+    activekey_proto_t active_proto; /**< Cyfral/Metakom key on the pad (key not meaningful); UNKNOWN = signal seen, not decoded. */
     uint32_t active_code;           /**< Its code, see activekey_code_to_str().                     */
     ibutton_key_t key;  /**< Last ROM read while present.            */
     int64_t updated_us; /**< esp_timer timestamp of the last change. */
@@ -103,7 +103,8 @@ void ibutton_get_state(ibutton_reader_state_t *out);
  * @brief Read the attached key immediately (bypasses poll interval).
  * @return ESP_OK on success, ESP_ERR_NOT_FOUND if no device, ESP_ERR_INVALID_CRC on CRC error,
  *         ESP_ERR_INVALID_STATE if the bus is shorted, ESP_ERR_TIMEOUT if bus is busy,
- *         ESP_ERR_NOT_SUPPORTED when a Cyfral/Metakom key answered instead (see ibutton_get_state()).
+ *         ESP_ERR_NOT_SUPPORTED when a Cyfral/Metakom key answered instead (see ibutton_get_state()),
+ *         ESP_ERR_INVALID_RESPONSE when the line carries a stream that did not decode.
  */
 esp_err_t ibutton_read(ibutton_key_t *out);
 

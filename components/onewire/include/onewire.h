@@ -94,6 +94,13 @@ void onewire_pulse_low(onewire_bus_t *bus, uint32_t low_us);
 /** @brief Check whether the bus is idle (pulled high) - detects shorted contacts. */
 bool onewire_is_idle(onewire_bus_t *bus);
 
+/**
+ * @brief Watch the undriven line for @p window_us and report whether it
+ *        changes level by itself. A 1-Wire slave never does; a Cyfral or
+ *        Metakom key streams its code continuously.
+ */
+bool onewire_line_toggles(onewire_bus_t *bus, uint32_t window_us);
+
 /** Pad probe results, each the level read in that configuration. */
 typedef struct {
     int input_floating;  /**< Input, no pulls: what the external circuit holds.    */

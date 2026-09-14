@@ -32,6 +32,7 @@ static const char *TAG = "ibutton";
 #define BUS_MUTEX_TIMEOUT_MS 3000
 #define POLL_TASK_STACK      6144 /* Event callback may write to NVS; ADC decode buffers. */
 #define ACTIVE_SETTLE_MS     3    /* Let a line-powered key restart after our reset pulses. */
+#define ACTIVE_WATCH_US      2000 /* Enough for a dozen Cyfral/Metakom periods (~125 us). */
 #define POLL_TASK_PRIO       5
 #define JOB_PRESENT_POLLS    2    /* Polls a blank must survive before it is programmed. */
 
@@ -352,7 +353,9 @@ static void state_update(bool present, bool crc_ok, bool shorted, const ibutton_
     xSemaphoreGive(s_ib.state_mutex);
 
     if (changed) {
-        if (present && proto != ACTIVEKEY_PROTO_NONE) {
+        if (present && proto == ACTIVEKEY_PROTO_UNKNOWN) {
+            ESP_LOGW(TAG, "active signal on the line, code not decoded (see /api/key/analog)");
+        } else if (present && proto != ACTIVEKEY_PROTO_NONE) {
             char str[ACTIVEKEY_CODE_STR_LEN];
             activekey_code_to_str(proto, code, str);
             ESP_LOGI(TAG, "active key attached: %s %s (swing %u..%u, period %" PRIu32 " us)",
@@ -400,8 +403,24 @@ static void apply_read_result(esp_err_t err, const ibutton_key_t *key)
 static esp_err_t bus_probe(ibutton_key_t *key, activekey_result_t *active)
 {
     active->proto = ACTIVEKEY_PROTO_NONE;
+
+    /* A line that moves on its own carries a Cyfral/Metakom stream: a
+     * 1-Wire reset would only read garbage off it (random presence, bad
+     * CRC) and briefly cut the key's power, so listen first. */
+    if (activekey_available() && onewire_line_toggles(&s_ib.bus, ACTIVE_WATCH_US)) {
+        if (activekey_read(active) == ESP_OK) {
+            return ESP_ERR_NOT_SUPPORTED;
+        }
+        return ESP_ERR_INVALID_RESPONSE; /* Signal present, code not decodable. */
+    }
+
     esp_err_t err = bus_read_rom(key);
-    if ((err == ESP_ERR_NOT_FOUND || err == ESP_ERR_INVALID_STATE) && activekey_available()) {
+    if (err == ESP_OK) {
+        return ESP_OK;
+    }
+    /* Nothing sensible on 1-Wire (no device, bad CRC, line low): a key whose
+     * stream stays above the digital threshold still shows up on the ADC. */
+    if (activekey_available()) {
         vTaskDelay(pdMS_TO_TICKS(ACTIVE_SETTLE_MS));
         if (activekey_read(active) == ESP_OK) {
             return ESP_ERR_NOT_SUPPORTED;
@@ -414,6 +433,10 @@ static void apply_probe_result(esp_err_t err, const ibutton_key_t *key, const ac
 {
     if (err == ESP_ERR_NOT_SUPPORTED) {
         state_update(true, true, false, NULL, active);
+    } else if (err == ESP_ERR_INVALID_RESPONSE) {
+        /* Active signal we could not decode: shown as "unknown active key". */
+        activekey_result_t unknown = {.proto = ACTIVEKEY_PROTO_UNKNOWN};
+        state_update(true, false, false, NULL, &unknown);
     } else {
         apply_read_result(err, key);
     }
